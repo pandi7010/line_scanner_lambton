@@ -1,29 +1,26 @@
 """
-core/ejector.py - Decides WHEN each ejector LED switches ON (delay + blow time).
+core/ejector.py - Decides WHEN each ejector LED switches ON (from the EXACT touch time).
 
-What happens to one object (example: delay 2 ms, blow 10 ms):
+What happens to one object (example: delay 10 ms, blow 10 ms):
 
-    10:00:00.000  FRONT camera sees a new object in channel 16   <- "seen at"
-                  (REAR may see it too, a few ms later -> same object, "seen by BOTH")
-    10:00:00.002  ejector LED 16 switches ON                     <- "LED ON at" (seen + delay)
-    10:00:00.012  ejector LED 16 switches OFF                    (ON + blow time)
+    10:00:00.000  object touches the decision line (exact line time from the camera clock)
+    10:00:00.003  the PC finds it in the frame                 -> PC reaction 3.0 ms
+    10:00:00.010  ejector LED ON  (touch + delay)              -> ON TIME, late by 0.0 ms
+    10:00:00.021  ejector LED OFF (last line of the object + delay + blow)
 
-    Log row:  seen at .000 | BOTH | ch 16 | LED ON at .002 | delay set 2.0 | measured 2.1 ms
-              | FRONT pixels 1000-1060 | REAR pixels 1012-1071
+    If the PC finds it only at 10:00:00.012, the LED comes ON at once, 2 ms late -> LATE.
+    If the PC finds it after the whole blow window is over, the LED stays OFF -> MISSED
+    (a blast now would only hit the wrong grain - same rule as lambton-main capture_timing).
 
 Rules:
-  * EITHER camera can trigger an ejection (like lambton-main merges both cameras).
-  * FRONT and REAR seeing the same channel within `same_object_ms` (150 ms) = ONE object
-    -> one ejection, counted from the FIRST camera that saw it.
-  * The same camera seeing a channel switch ON again = a NEW object.
-  * "Delay measured" = LED ON time - seen time, from the PC's precise clock. It shows how
-    exactly the PC keeps the delay (Windows timers are not perfect: expect +0 ... +1 ms).
+  * EITHER camera triggers. FRONT and REAR touching the same channel within
+    `same_object_ms` (30 ms, real camera times) = ONE object = one ejection.
+  * The delay is counted from the camera that touched FIRST (also if that camera's
+    frame reached the PC later).
+  * Blow time grows with the object's length: LED OFF = last line + delay + blow.
+  * Result: ON TIME (late <= late_tolerance_ms), LATE, or MISSED.
 
 Display only - no valve is fired. No PyQt5 here.
-
-    scheduler = EjectScheduler({"FRONT": front.activity, "REAR": rear.activity}, event_log)
-    scheduler.set_timing(delay_ms=5, blow_ms=10)
-    scheduler.start() ... scheduler.lit_channels()  ... scheduler.stop()
 """
 
 import threading
@@ -34,13 +31,16 @@ import numpy as np
 
 class EjectScheduler:
 
-    def __init__(self, activities, event_log, delay_ms=2.0, blow_ms=10.0, same_object_ms=150.0):
+    def __init__(self, activities, event_log, delay_ms=10.0, blow_ms=10.0, same_object_ms=30.0,
+                 late_tolerance_ms=1.0, max_wait_s=1.0):
         """
-        activities     : {"FRONT": ChannelActivity, "REAR": ChannelActivity}
-        event_log      : core.EventLog that receives one row per ejection
-        delay_ms       : time from "camera saw it" to "LED ON"
-        blow_ms        : how long the LED (valve) stays ON
-        same_object_ms : FRONT + REAR within this time in one channel = the same object
+        activities        : {"FRONT": ChannelActivity, "REAR": ChannelActivity}
+        event_log         : core.EventLog - one row per object
+        delay_ms          : touch -> LED ON
+        blow_ms           : extra LED ON time after the object's last line (+ delay)
+        same_object_ms    : FRONT + REAR in one channel within this time = the same object
+        late_tolerance_ms : up to this much late still counts as ON TIME
+        max_wait_s        : write the log row at the latest this long after the touch
         """
         self.activities = activities
         self.event_log = event_log
@@ -48,12 +48,15 @@ class EjectScheduler:
         self.delay = delay_ms / 1000.0
         self.blow = blow_ms / 1000.0
         self.same_object = same_object_ms / 1000.0
+        self.late_tolerance = late_tolerance_ms / 1000.0
+        self.max_wait = max_wait_s
 
         self._checked = {cam: np.zeros(self.channels, dtype=np.int64) for cam in activities}
         self._last_object = {}           # channel index -> newest object in that channel
-        self._pending = []               # objects waiting for their delay
-        self._to_log = []                # fired objects, logged once "seen by" is final
+        self._pending = []               # objects waiting for their LED ON time
+        self._to_log = []                # fired / missed objects, logged when they are finished
         self._fired_at = np.full(self.channels, -1e9)   # when each LED last switched ON
+        self._on_until = np.full(self.channels, -1e9)   # when each LED switches OFF
         self._fired_by = [""] * self.channels           # "FRONT" / "REAR" / "BOTH"
 
         # perf_counter (precise) -> PC clock time, for the times shown in the log
@@ -79,85 +82,113 @@ class EjectScheduler:
     def lit_channels(self, min_visible_ms=150.0, now=None):
         """
         {channel: "FRONT"/"REAR"/"BOTH"} of LEDs to show ON now.
-        A 10 ms blow is too short to see on a 25 Hz screen, so each LED is shown
-        for at least `min_visible_ms` after it switched ON.
+        Shown while really ON, and at least `min_visible_ms` (a 10 ms blow is too short to see).
         """
         now = time.perf_counter() if now is None else now
         with self._lock:
-            show_for = max(self.blow, min_visible_ms / 1000.0)
-            idx = np.flatnonzero(now - self._fired_at <= show_for)
-            return {int(i) + 1: self._fired_by[i] for i in idx}
+            show = (now <= self._on_until) | (now - self._fired_at <= min_visible_ms / 1000.0)
+            show &= self._fired_at > -1e8
+            return {int(i) + 1: self._fired_by[i] for i in np.flatnonzero(show)}
 
     # -------------------------------------------------------------- the work
     def check_once(self, now=None):
-        """1) find new objects  2) switch LEDs ON when their delay is over  3) write log rows."""
+        """1) new objects  2) keep objects up to date  3) LED ON when due  4) write log rows."""
         now = time.perf_counter() if now is None else now
 
-        # 1) New objects from both cameras, in time order.
+        # 1) New objects from both cameras, in real (camera) time order.
         snap = {cam: activity.snapshot() for cam, activity in self.activities.items()}
         starts = []
-        for cam, (_, start_time, start_count, _, _) in snap.items():
+        for cam, (_, start_time, start_count, _, _, found_time, _) in snap.items():
             for i in np.flatnonzero(start_count > self._checked[cam]):
-                starts.append((float(start_time[i]), cam, int(i)))
+                starts.append((float(start_time[i]), cam, int(i), int(start_count[i]), float(found_time[i])))
             self._checked[cam] = start_count
         starts.sort()
 
         with self._lock:
-            for seen, cam, i in starts:
-                count = int(snap[cam][2][i])            # which object of this camera/channel
+            for touched, cam, i, count, found in starts:
                 obj = self._last_object.get(i)
-                if obj and cam not in obj["by"] and seen - obj["seen"] <= self.same_object:
-                    obj["by"].add(cam)                  # other camera, same object
-                    obj["count"][cam] = count
+                if obj and cam not in obj["count"] and abs(touched - obj["seen"]) <= self.same_object:
+                    obj["count"][cam] = count            # the other camera, same object
+                    obj["found"] = min(obj["found"], found)
+                    if touched < obj["seen"] and obj["on"] is None and obj["result"] is None:
+                        obj["seen"] = touched            # this camera touched FIRST: count from here
+                        obj["fire_at"] = touched + obj["delay_set"]
                     continue
-                obj = {"channel": i + 1, "seen": seen, "by": {cam}, "count": {cam: count},
-                       "pixels": {}, "delay_set": self.delay, "fire_at": seen + self.delay, "on": None}
+                obj = {"channel": i + 1, "seen": touched, "found": found, "last": touched,
+                       "count": {cam: count}, "open": {cam: True}, "pixels": {},
+                       "delay_set": self.delay, "fire_at": touched + self.delay,
+                       "on": None, "result": None}
                 self._last_object[i] = obj
                 self._pending.append(obj)
 
-            # Keep each object's pixel range up to date while that object is still the
-            # newest one in its channel (a newer object must not overwrite it).
+            # 2) Keep every waiting / fired object up to date (last line, still there?, pixels).
             for obj in self._pending + self._to_log:
-                self._update_pixels(obj, snap)
+                self._update_object(obj, snap)
 
-            # 2) Delay over -> LED ON.
+            # 3) LED ON when the delay is over (or at once if the PC was late).
             still_waiting = []
             for obj in self._pending:
-                if now >= obj["fire_at"]:
-                    i = obj["channel"] - 1
-                    obj["on"] = now
-                    self._fired_at[i] = now
-                    self._fired_by[i] = self._label(obj["by"])
-                    self._to_log.append(obj)
-                else:
+                if now < obj["fire_at"]:
                     still_waiting.append(obj)
+                    continue
+                i = obj["channel"] - 1
+                window_end = obj["last"] + obj["delay_set"] + self.blow       # planned LED OFF
+                if now > window_end and not any(obj["open"].values()):
+                    obj["result"] = "MISSED"             # too late for this object: no LED
+                else:
+                    obj["on"] = now
+                    late = now - obj["fire_at"]
+                    obj["result"] = "ON TIME" if late <= self.late_tolerance else "LATE"
+                    self._fired_at[i] = now
+                    self._fired_by[i] = self._label(obj["count"])
+                    self._on_until[i] = max(self._on_until[i], window_end, now + self.blow)
+                self._to_log.append(obj)
             self._pending = still_waiting
 
-            # 3) Log when "seen by" can no longer change (same_object time passed).
+            # Long object still passing: keep its LED ON (blow follows the object's length).
+            for obj in self._to_log:
+                if obj["on"] is not None:
+                    i = obj["channel"] - 1
+                    self._on_until[i] = max(self._on_until[i], obj["last"] + obj["delay_set"] + self.blow)
+
+            # 4) Log row when the object is finished (both cameras done) - at the latest after max_wait.
             keep = []
             for obj in self._to_log:
-                if now >= obj["seen"] + self.same_object:
-                    self.event_log.add(
-                        pixels=obj["pixels"],
-                        seen_time=obj["seen"] + self._clock_offset,
-                        seen_by=self._label(obj["by"]),
-                        channel=obj["channel"],
-                        on_time=obj["on"] + self._clock_offset,
-                        delay_set_ms=obj["delay_set"] * 1000.0,
-                        delay_ms=(obj["on"] - obj["seen"]) * 1000.0,
-                    )
+                finished = now >= obj["seen"] + self.same_object and not any(obj["open"].values())
+                if finished or now - obj["seen"] > self.max_wait:
+                    self._log(obj)
                 else:
                     keep.append(obj)
             self._to_log = keep
 
-    @staticmethod
-    def _update_pixels(obj, snap):
-        """obj["pixels"][camera] = (first pixel, last pixel), while it is still the same object."""
+    def _update_object(self, obj, snap):
         i = obj["channel"] - 1
         for cam, count in obj["count"].items():
-            _, _, start_count, pixel_from, pixel_to = snap[cam]
-            if int(start_count[i]) == count and not np.isnan(pixel_from[i]):
-                obj["pixels"][cam] = (int(pixel_from[i]), int(pixel_to[i]))
+            last_seen, _, start_count, pixel_from, pixel_to, _, is_open = snap[cam]
+            if int(start_count[i]) == count:             # still this object in that camera
+                obj["last"] = max(obj["last"], float(last_seen[i]))
+                obj["open"][cam] = bool(is_open[i])
+                if not np.isnan(pixel_from[i]):
+                    obj["pixels"][cam] = (int(pixel_from[i]), int(pixel_to[i]))
+            else:
+                obj["open"][cam] = False                 # a newer object started -> this one ended
+
+    def _log(self, obj):
+        off = self._clock_offset
+        on = obj["on"]
+        self.event_log.add(
+            seen_time=obj["seen"] + off,
+            seen_by=self._label(obj["count"]),
+            channel=obj["channel"],
+            found_time=obj["found"] + off,
+            on_time=None if on is None else on + off,
+            delay_set_ms=obj["delay_set"] * 1000.0,
+            delay_ms=None if on is None else (on - obj["seen"]) * 1000.0,
+            late_ms=None if on is None else max(0.0, on - obj["fire_at"]) * 1000.0,
+            result=obj["result"],
+            length_ms=(obj["last"] - obj["seen"]) * 1000.0,
+            pixels=obj["pixels"],
+        )
 
     def next_fire_time(self):
         with self._lock:

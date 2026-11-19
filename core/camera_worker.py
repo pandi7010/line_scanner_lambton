@@ -4,9 +4,8 @@ core/camera_worker.py - Reads ONE camera in the background.
 Why a background thread?
     Reading a camera means WAITING for the next frame. If the window waited,
     it would freeze. So each camera gets its own worker thread that only does:
-        apply setting changes -> read frame -> mirror (if needed)
-        -> channel detection (which of the 63 channels has something in it)
-        -> FrameStore
+        apply setting changes -> read frame -> exact line times (camera clock)
+        -> mirror (if needed) -> line-by-line channel detection -> FrameStore
 
 How the window talks to a worker (no PyQt5 needed here):
     worker.frames.get()                          -> newest frame
@@ -28,6 +27,7 @@ import time
 
 import numpy as np
 
+from core.camera_clock import CameraClock
 from core.channel_activity import ChannelActivity
 from core.frame_store import FrameStore
 
@@ -36,19 +36,22 @@ RETRY_SECONDS = 3       # wait this long before trying to (re)connect a camera
 
 class CameraWorker:
 
-    def __init__(self, name, camera, mirror=False, detector=None):
+    def __init__(self, name, camera, mirror=False, detector=None, clock=None, end_gap=2):
         """
         name     : "FRONT" or "REAR"
         camera   : a hardware camera object (e.g. hardware.MindVisionCamera)
         mirror   : flip the picture left <-> right (REAR looks from the other side)
         detector : core.ChannelDetector, or None for no channel detection
+        clock    : core.CameraClock (camera timestamps -> exact line times); None = a new one
+        end_gap  : an object ends after this many empty lines
         """
         self.name = name
         self.camera = camera
         self.mirror = mirror
         self.detector = detector
+        self.clock = clock if clock is not None else CameraClock()
         self.frames = FrameStore()
-        self.activity = ChannelActivity(detector.channels if detector else 63)
+        self.activity = ChannelActivity(detector.channels if detector else 63, end_gap=end_gap)
         self.background_level = 0        # median colour level in the chute (for lower/upper)
         self.paused = False
 
@@ -119,6 +122,7 @@ class CameraWorker:
             # 3) Read one frame.
             try:
                 frame = self.camera.read_frame(timeout_ms=2000)
+                arrived = time.perf_counter()
             except Exception as e:       # noqa: BLE001  (camera unplugged, ...)
                 self._set_status(f"Connection lost: {e}", False)
                 self.camera.close()
@@ -140,10 +144,16 @@ class CameraWorker:
             if self.mirror:
                 frame = np.ascontiguousarray(frame[:, ::-1])   # flip left <-> right
 
-            # 5) Which channels have something in them? (EVERY frame, so no grain is missed.)
+            # 5) Exact time of every line (camera clock), then: which channels have
+            #    something in WHICH line? (EVERY line of EVERY frame, so no grain is missed.)
             if self.detector is not None:
-                active, self.background_level, pixels = self.detector.detect_with_pixels(frame)
-                self.activity.mark(active, pixels=pixels)
+                info = getattr(self.camera, "last_frame_info", None) or {}
+                lines = frame.shape[0]
+                frame_end, line_time = self.clock.update(info.get("camera_ts"),
+                                                         info.get("arrived", arrived), lines)
+                line_times = self.clock.line_times(frame_end, line_time, lines)
+                rows, self.background_level, pixels = self.detector.detect_rows(frame)
+                self.activity.mark_rows(rows, line_times, time.perf_counter(), pixels)
 
             # 6) Hand it to the screen.
             self.frames.put(frame)

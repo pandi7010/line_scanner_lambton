@@ -1,23 +1,23 @@
 """
-ui/log_window.py - The "Logs" window: one row per ejection.
+ui/log_window.py - The "Logs" window: one row per object (ejection).
 
-    +-----------------------------------------------------------------------------------+
-    | Channel [All]  Seen by [All v]  [x] Auto-scroll          [Pause] [Clear] [Export CSV] |
-    +----+--------------+---------+---------+--------------+-----------+----------+------+
-    | #  | Seen at      | Seen by | Channel | LED ON at    | Delay set | Measured | Diff |
-    | 12 | 16:52:03.125 | BOTH    |   16    | 16:52:03.127 |   2.0     |   2.1    | 0.1  |
-    +----+--------------+---------+---------+--------------+-----------+----------+------+
-    | 120 ejections | measured - set: average 0.3 ms, max 1.2 ms | 4 in the last second |
-    +-----------------------------------------------------------------------------------+
+    Channel [All]  Seen by [All v]  Result [All v]  [x] Auto-scroll     [Pause] [Clear] [Export CSV]
+    +---------------+---------+----+---------------+----------+---------------+-------+-------+-------+---------+
+    | Touched line  | Seen by | Ch | PC saw at     | Reaction | LED ON at     | Delay | Delay | Late  | Result  | ...
+    |               |         |    |               |   (ms)   |               |  set  | meas. | by    |         |
+    | 16:52:03.1250 | BOTH    | 16 | 16:52:03.1281 |   3.1    | 16:52:03.1350 | 10.0  | 10.0  | 0.0   | ON TIME |
+    +---------------+---------+----+---------------+----------+---------------+-------+-------+-------+---------+
+    120 objects | ON TIME 118 | LATE 2 (max 2.3 ms) | MISSED 0 | PC reaction: average 3.4 ms, max 9.8 ms
 
-A row appears ~150 ms after the object was seen (then it is certain whether
-one or both cameras saw it). The window reads new rows 4 times per second.
+A row appears when the object has completely passed (or after 1 s).
+The window reads new rows 4 times per second.
 """
 
 import os
 import time
 
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
                              QHeaderView, QLabel, QMessageBox, QPushButton, QSpinBox,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -27,8 +27,14 @@ from core import clock_text, write_csv
 
 MAX_ROWS = 5000          # rows shown in the table (older rows are removed from the top)
 MAX_KEPT = 20000         # rows kept by this window (for filters and export)
-COLUMNS = ["#", "Seen at", "Seen by", "Channel", "LED ON at",
-           "Delay set (ms)", "Delay measured (ms)", "Difference (ms)", "FRONT pixels", "REAR pixels"]
+COLUMNS = ["#", "Touched line at", "Seen by", "Channel", "PC saw at", "PC reaction (ms)",
+           "LED ON at", "Delay set (ms)", "Delay measured (ms)", "Late by (ms)", "Result",
+           "Object (ms)", "FRONT pixels", "REAR pixels"]
+RESULT_COLOURS = {"ON TIME": QColor(39, 174, 96), "LATE": QColor(230, 126, 34), "MISSED": QColor(192, 57, 43)}
+
+
+def _num(value):
+    return "-" if value is None else f"{value:.1f}"
 
 
 class LogWindow(QWidget):
@@ -41,7 +47,7 @@ class LogWindow(QWidget):
         self.paused = False
 
         self.setWindowTitle("Lambton - Ejection Log")
-        self.resize(1150, 650)
+        self.resize(1400, 680)
 
         # --- filters and buttons --------------------------------------------
         self.channel_filter = QSpinBox()
@@ -53,12 +59,16 @@ class LogWindow(QWidget):
         self.seen_by_filter.addItems(["All", "BOTH", "FRONT", "REAR"])
         self.seen_by_filter.currentIndexChanged.connect(self.rebuild_table)
 
+        self.result_filter = QComboBox()
+        self.result_filter.addItems(["All", "ON TIME", "LATE", "MISSED"])
+        self.result_filter.currentIndexChanged.connect(self.rebuild_table)
+
         self.autoscroll = QCheckBox("Auto-scroll")
         self.autoscroll.setChecked(True)
 
         self.pause_button = QPushButton("Pause")
         self.pause_button.setCheckable(True)
-        self.pause_button.setToolTip("Stop adding new rows (ejections are still recorded)")
+        self.pause_button.setToolTip("Stop adding new rows (objects are still recorded)")
         self.pause_button.toggled.connect(self.on_pause)
 
         clear_button = QPushButton("Clear")
@@ -69,22 +79,23 @@ class LogWindow(QWidget):
         export_button.clicked.connect(self.on_export)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Channel:"))
-        top.addWidget(self.channel_filter)
-        top.addSpacing(10)
-        top.addWidget(QLabel("Seen by:"))
-        top.addWidget(self.seen_by_filter)
-        top.addSpacing(10)
+        for label, widget in (("Channel:", self.channel_filter), ("Seen by:", self.seen_by_filter),
+                              ("Result:", self.result_filter)):
+            top.addWidget(QLabel(label))
+            top.addWidget(widget)
+            top.addSpacing(10)
         top.addWidget(self.autoscroll)
         top.addStretch()
         top.addWidget(self.pause_button)
         top.addWidget(clear_button)
         top.addWidget(export_button)
 
-        info = QLabel("One row = one ejection. <b>Seen at</b> = first camera saw the object. "
-                      "<b>LED ON at</b> = ejector LED switched ON. <b>Delay measured</b> = LED ON at "
-                      "- Seen at. <b>Difference</b> = measured - set (how late the PC was). "
-                      "<b>FRONT / REAR pixels</b> = where each camera saw the object (first - last pixel).")
+        info = QLabel(
+            "One row = one object. <b>Touched line at</b> = exact moment it touched the decision line "
+            "(camera clock). <b>PC reaction</b> = how long until the PC found it. <b>LED ON at</b> = "
+            "touched + delay (or later if the PC was late). <b>Late by</b> = LED ON - planned LED ON. "
+            "<b>Result</b>: ON TIME (late &le; 1 ms), LATE, or MISSED (PC too late, no LED). "
+            "<b>Object</b> = first to last line of the object.")
         info.setWordWrap(True)
 
         # --- table ----------------------------------------------------------
@@ -95,8 +106,7 @@ class LogWindow(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
-        self.summary = QLabel("No ejections yet")
-        self.summary.setStyleSheet("color: gray;")
+        self.summary = QLabel("No objects yet")
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
@@ -113,7 +123,10 @@ class LogWindow(QWidget):
     def _matches(self, e):
         channel = self.channel_filter.value()
         seen_by = self.seen_by_filter.currentText()
-        return (channel == 0 or e.channel == channel) and (seen_by == "All" or e.seen_by == seen_by)
+        result = self.result_filter.currentText()
+        return ((channel == 0 or e.channel == channel)
+                and (seen_by == "All" or e.seen_by == seen_by)
+                and (result == "All" or e.result == result))
 
     def _shown_events(self):
         return [e for e in self.events if self._matches(e)]
@@ -128,7 +141,7 @@ class LogWindow(QWidget):
                 del self.events[:len(self.events) - MAX_KEPT]
             if not self.paused:
                 self._add_rows([e for e in new if self._matches(e)])
-        self._update_summary()
+            self._update_summary()
 
     def _add_rows(self, events):
         if not events:
@@ -138,12 +151,15 @@ class LogWindow(QWidget):
         for e in events:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            values = [e.seq, clock_text(e.seen_time), e.seen_by, e.channel, clock_text(e.on_time),
-                      f"{e.delay_set_ms:.1f}", f"{e.delay_ms:.1f}", f"{e.difference_ms:+.1f}",
+            values = [e.seq, clock_text(e.seen_time), e.seen_by, e.channel, clock_text(e.found_time),
+                      _num(e.reaction_ms), clock_text(e.on_time), _num(e.delay_set_ms), _num(e.delay_ms),
+                      _num(e.late_ms), e.result, _num(e.length_ms),
                       e.pixels_text("FRONT"), e.pixels_text("REAR")]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setTextAlignment(Qt.AlignCenter)
+                if COLUMNS[col] == "Result" and e.result in RESULT_COLOURS:
+                    item.setForeground(RESULT_COLOURS[e.result])
                 self.table.setItem(row, col, item)
         extra = self.table.rowCount() - MAX_ROWS
         for _ in range(max(0, extra)):
@@ -159,18 +175,22 @@ class LogWindow(QWidget):
         self._update_summary()
 
     def _update_summary(self):
-        if not self.events:
-            self.summary.setText("No ejections yet")
+        shown = self._shown_events()
+        if not shown:
+            self.summary.setText("No objects yet" if not self.events else "No rows match the filter")
             return
-        shown = self._shown_events()[-MAX_ROWS:]
-        text = f"{len(self.events):,} ejections received   |   {len(shown):,} shown"
-        if shown:
-            diffs = [e.difference_ms for e in shown]
-            text += (f"   |   measured - set:  average {sum(diffs) / len(diffs):+.1f} ms, "
-                     f"max {max(diffs):+.1f} ms")
-        now = time.time()
-        last_second = sum(1 for e in self.events[-2000:] if now - e.seen_time <= 1.0)
-        self.summary.setText(text + f"   |   {last_second} in the last second")
+        on_time = sum(1 for e in shown if e.result == "ON TIME")
+        late = [e.late_ms for e in shown if e.result == "LATE"]
+        missed = sum(1 for e in shown if e.result == "MISSED")
+        reactions = [e.reaction_ms for e in shown]
+        late_text = f"LATE {len(late)}" + (f" (max {max(late):.1f} ms)" if late else "")
+        self.summary.setText(
+            f"<b>{len(shown):,} objects</b> &nbsp;|&nbsp; "
+            f"<span style='color:#27ae60'><b>ON TIME {on_time}</b></span> &nbsp;|&nbsp; "
+            f"<span style='color:#e67e22'><b>{late_text}</b></span> &nbsp;|&nbsp; "
+            f"<span style='color:#c0392b'><b>MISSED {missed}</b></span> &nbsp;|&nbsp; "
+            f"PC reaction: average {sum(reactions) / len(reactions):.1f} ms, max {max(reactions):.1f} ms"
+            f" &nbsp;&rarr; Delay must be longer than the max reaction")
 
     # --------------------------------------------------------------- buttons
     def on_pause(self, paused):

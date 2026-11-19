@@ -10,7 +10,8 @@ main.py only CONNECTS the layers; it contains no camera or window logic:
     core/      CameraWorker      - reads the camera in the background (no PyQt5)
                ChannelMap        - which pixels belong to which valve (equal or calibrated)
                ChannelDetector   - which of the 63 channels has something in it
-               EjectScheduler    - ejector LEDs: ON after the delay, for the blow time
+               CameraClock       - exact time of every camera line (camera timestamps)
+               EjectScheduler    - ejector LEDs: ON at touch time + delay; ON TIME / LATE / MISSED
                EventLog          - one row per ejection (Logs window)
     ui/        MainWindow        - shows everything (PyQt5)
 
@@ -27,7 +28,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 from config import load_config  # noqa: E402
-from core import CameraWorker, ChannelDetector, ChannelMap, EjectScheduler, EventLog  # noqa: E402
+from core import (CameraClock, CameraWorker, ChannelDetector, ChannelMap,  # noqa: E402
+                  EjectScheduler, EventLog)
 from hardware import SDK_AVAILABLE, SDK_ERROR, MindVisionCamera  # noqa: E402
 from ui import MainWindow  # noqa: E402
 
@@ -59,14 +61,19 @@ def main():
             colour=config["detection"]["colour"],
             min_pixels=config["detection"]["min_pixels"],
         )
-        workers[name] = CameraWorker(name, camera, mirror=bool(cam_cfg["mirror"]), detector=detector)
+        clock = CameraClock(default_line_rate_hz=config["clock"]["default_line_rate_hz"],
+                            offset_window_frames=config["clock"]["offset_window_frames"],
+                            use_camera_timestamp=config["clock"]["use_camera_timestamp"])
+        workers[name] = CameraWorker(name, camera, mirror=bool(cam_cfg["mirror"]), detector=detector,
+                                     clock=clock, end_gap=config["ejector"]["end_gap_lines"])
 
     # Ejector: either camera triggers; LED ON after the delay, for the blow time.
     event_log = EventLog()
     ej = config["ejector"]
     ejector = EjectScheduler({name: w.activity for name, w in workers.items()}, event_log,
                              delay_ms=ej["delay_ms"], blow_ms=ej["blow_ms"],
-                             same_object_ms=ej["same_object_ms"])
+                             same_object_ms=ej["same_object_ms"],
+                             late_tolerance_ms=ej["late_tolerance_ms"])
 
     # 4) UI layer
     window = MainWindow(workers, config, ejector, event_log)

@@ -88,14 +88,16 @@ class MainWindow(QMainWindow):
         self.delay_box.setSingleStep(0.5)
         self.delay_box.setSuffix(" ms")
         self.delay_box.setValue(delay_ms)
-        self.delay_box.setToolTip("Time from 'camera saw the object' to 'ejector LED ON'")
+        self.delay_box.setToolTip("Time from 'object touched the decision line' (exact camera time) "
+                                  "to 'ejector LED ON'. Must be longer than the PC reaction (see Logs).")
         self.blow_box = QDoubleSpinBox()
         self.blow_box.setRange(0.5, 2000.0)
         self.blow_box.setDecimals(1)
         self.blow_box.setSingleStep(0.5)
         self.blow_box.setSuffix(" ms")
         self.blow_box.setValue(blow_ms)
-        self.blow_box.setToolTip("How long the ejector LED stays ON")
+        self.blow_box.setToolTip("LED stays ON until the object's last line + delay + this time "
+                                 "(long objects get a longer blow)")
         for box in (self.delay_box, self.blow_box):
             box.setKeyboardTracking(False)       # apply on Enter / arrows, not every key
             box.setMinimumWidth(95)
@@ -209,6 +211,10 @@ class MainWindow(QMainWindow):
                     f"{lines_per_s:,.0f} lines/s   |   brightness {worker.brightness:.0f} / 255")
             if worker.detector is not None and worker.frame_count:
                 text += f"   |   background level {worker.background_level} (lower/upper must be around it)"
+            clock = getattr(worker, "clock", None)
+            if clock is not None and worker.frame_count:
+                text += ("   |   line times: CAMERA CLOCK" if clock.using_camera_clock
+                         else "   |   line times: PC clock (no camera timestamp)")
             if worker.detector is not None:
                 calibrated = worker.detector.channel_map.calibrated
                 text += "   |   channels: " + ("CALIBRATED" if calibrated else "equal (not calibrated)")

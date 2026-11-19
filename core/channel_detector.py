@@ -93,16 +93,67 @@ class ChannelDetector:
         counts = np.bincount(channel, minlength=cmap.channels + 1)[1:cmap.channels + 1]
         active = {int(i) + 1 for i in np.flatnonzero(counts >= self.min_pixels)}
 
-        # Where is each object? Split the hit pixels into groups ("runs") that touch.
-        pixels = {}
-        if active:
-            breaks = np.flatnonzero(np.diff(hit_columns) > MAX_GAP + 1)
-            starts = np.concatenate(([0], breaks + 1))
-            ends = np.concatenate((breaks, [hit_columns.size - 1]))
-            for a, b in zip(starts, ends):
-                first, last = int(hit_columns[a]), int(hit_columns[b])
-                for ch in range(int(channel[a]), int(channel[b]) + 1):
-                    if ch in active:
-                        old = pixels.get(ch)
-                        pixels[ch] = (first, last) if old is None else (min(old[0], first), max(old[1], last))
-        return active, level, pixels
+        return active, level, _object_pixels(hit_columns, channel, active)
+
+    def detect_rows(self, frame):
+        """
+        LINE BY LINE: which channels have something in EACH line of the frame?
+        Returns (rows, level, pixels):
+            rows   : True/False table, one row per camera line, one column per channel
+                     (rows[r, k] = channel k+1 has at least `min_pixels` hit pixels in line r)
+            level  : background level (as in detect)
+            pixels : {channel: (first pixel, last pixel)} of the objects in this frame
+        With this the exact LINE where an object starts is known -> exact time.
+        """
+        cmap = self.channel_map
+        lines, width = frame.shape[:2]
+        sp = max(0, min(int(np.ceil(cmap.start)), width))
+        ep = max(sp, min(int(np.ceil(cmap.end)), width))
+        if ep - sp < cmap.channels:
+            return np.zeros((lines, cmap.channels), dtype=bool), 0, {}
+
+        colour = frame[:, sp:ep, self.colour_index]
+        if self.band_mode:
+            hit = (colour > self.lower) & (colour < self.upper)
+        else:
+            hit = (colour < self.lower) | (colour > self.upper)
+        level = int(np.median(colour.min(axis=0)))
+
+        # Where does each channel start in these columns? (kept until the map changes)
+        key = (id(cmap), sp, ep)
+        if getattr(self, "_row_cache_key", None) != key:
+            channel_of_col = cmap.channel_of(np.arange(sp, ep))
+            starts = np.searchsorted(channel_of_col, np.arange(1, cmap.channels + 1), side="left")
+            empty = np.bincount(channel_of_col, minlength=cmap.channels + 1)[1:cmap.channels + 1] == 0
+            self._row_cache_key = key
+            self._row_cache = (channel_of_col, np.minimum(starts, ep - sp - 1), empty)
+        channel_of_col, starts, empty = self._row_cache
+
+        counts = np.add.reduceat(hit.astype(np.uint16), starts, axis=1)   # hit pixels per line+channel
+        counts[:, empty] = 0
+        rows = counts >= self.min_pixels
+
+        active = {int(k) + 1 for k in np.flatnonzero(rows.any(axis=0))}
+        hit_columns = np.flatnonzero(hit.any(axis=0))
+        pixels = _object_pixels(hit_columns + sp, channel_of_col[hit_columns], active) if active else {}
+        return rows, level, pixels
+
+
+def _object_pixels(hit_columns, channel, active):
+    """
+    {channel: (first pixel, last pixel)} - split the hit pixels into groups ("runs") that
+    touch (gap up to MAX_GAP); every active channel a run covers gets the WHOLE run.
+    """
+    pixels = {}
+    if not active or len(hit_columns) == 0:
+        return pixels
+    breaks = np.flatnonzero(np.diff(hit_columns) > MAX_GAP + 1)
+    starts = np.concatenate(([0], breaks + 1))
+    ends = np.concatenate((breaks, [len(hit_columns) - 1]))
+    for a, b in zip(starts, ends):
+        first, last = int(hit_columns[a]), int(hit_columns[b])
+        for ch in range(int(channel[a]), int(channel[b]) + 1):
+            if ch in active:
+                old = pixels.get(ch)
+                pixels[ch] = (first, last) if old is None else (min(old[0], first), max(old[1], last))
+    return pixels

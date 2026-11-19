@@ -87,6 +87,7 @@ lambtonblr/
 │   ├── mindvision_camera.py   <- open / read / change settings / close one camera
 │   └── sdk/                   <- mvsdk.py + MVCAMSDK_X64.dll (copied unchanged from lambton-main)
 ├── core/
+│   ├── camera_clock.py        <- camera timestamps -> exact time of every camera line
 │   ├── camera_worker.py       <- background thread per camera, applies setting changes
 │   ├── frame_store.py         <- holds the newest frame (thread-safe)
 │   ├── channel_map.py         <- which pixels belong to which valve (equal or calibrated)
@@ -143,18 +144,41 @@ Same "background" detection lambton-main uses (`evaluate_ejectors_instant`):
 ### 5b. Ejection - "the ejector LED switches ON"
 
 ```
- camera sees object ──── Delay ────► ejector LED ON ──── Blow time ────► LED OFF
-     "seen at"                          "LED ON at"
+ object touches the decision line ──── Delay ────► ejector LED ON ── until last line + Delay + Blow ──► OFF
+   "Touched line at" (camera clock)                  "LED ON at"
 ```
 
-- **Either camera** triggers (like lambton-main). FRONT and REAR seeing the same channel within
-  150 ms (`same_object_ms`) = **one** object = **one** ejection.
-- The delay is counted from the **first** camera that saw the object.
-- **Delay** and **Blow time** are set at the right of the LED bar (type + Enter, or arrows).
-  Starting values = lambton-main's active recipe RICE: delay **2 ms**, pulse **10 ms**.
-- LED colour = who saw it: **red** both cameras, **orange** FRONT only, **cyan** REAR only.
-- A 10 ms blow is too short to see on a screen that redraws every 40 ms, so each LED is
-  **shown** at least 150 ms (`led_hold_ms`). The log has the real times.
+**Exact touch time (camera clock).** The PC gets a frame a few ms after its lines were scanned
+(the frame must be full, then it travels over the network). So the software does **not** use
+"when the PC saw it". It uses the **camera's own clock** in every frame plus the **line number**:
+
+- camera clock counts in 0.1 ms steps; line time = (time between frames) / (lines per frame)
+- camera clock → PC clock with the **fastest** frame of the last 300 (Windows/network delays only add)
+- line r of a frame with N lines was scanned at  *frame end − (N − 1 − r) × line time*
+
+This is the same method as lambton-main `capture_timing.py`. Only the **fastest** transfer time
+(well under 1 ms on GigE) cannot be seen by any clock. The info line of each camera says
+**line times: CAMERA CLOCK** when this works.
+
+**Line by line.** Every camera line is checked. An object **starts** at its first line and **ends**
+after 2 empty lines (`end_gap_lines`). So two grains in one channel with 3+ background lines between
+them are **two objects** - even inside one frame.
+
+**When does the LED switch ON?**
+- Planned: **touched + Delay**. If the PC is in time, the LED switches ON exactly then → **ON TIME**.
+- If the PC finds the object only after that moment → LED ON at once → **LATE** (the log stores how late).
+- If the PC finds it after the whole blow window is over → **no LED** → **MISSED**
+  (a blast then would only hit the wrong grain - same rule as lambton-main).
+- **Rule:** the Delay must be **longer than the PC reaction** (frame filling + transfer + Windows).
+  The Logs window shows the reaction for every object and its maximum.
+
+**Blow time follows the object:** LED OFF = object's last line + Delay + Blow time. Long objects get longer blows.
+
+**Either camera** triggers. FRONT and REAR touching the same channel within **30 ms** (real camera times,
+`same_object_ms`) = **one** object. The delay starts at the camera that touched **first**.
+
+LED colour = who saw it: **red** both cameras, **orange** FRONT only, **cyan** REAR only.
+A 10 ms blow is too short to see on a 25 Hz screen, so each LED is **shown** at least 150 ms.
 
 ### 5c. The decision line (red dotted line in each camera picture)
 
@@ -178,31 +202,32 @@ It is only shown: detection still checks **every** line of every frame, so no gr
 If LEDs flicker with an empty chute, move them further away. Starting values are lambton-main's
 (`bg_config.json`): FRONT 68 / 221, REAR 60 / 164.
 
-## 6. Logs - when was it seen, when did the LED switch ON?
+## 6. Logs - when did it touch the line, when did the LED switch ON?
 
-Click **Logs**. One row per ejection:
+Click **Logs**. One row per object:
 
-| # | Seen at | Seen by | Channel | LED ON at | Delay set | Delay measured | Difference | FRONT pixels | REAR pixels |
-|---|---|---|---|---|---|---|---|---|---|
-| 12 | 16:52:03.125 | BOTH | 16 | 16:52:03.127 | 2.0 | 2.1 | +0.1 | 1000 - 1060 | 1012 - 1071 |
+| Touched line at | Seen by | Ch | PC saw at | PC reaction | LED ON at | Delay set | Delay measured | Late by | Result | Object | FRONT pixels | REAR pixels |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 16:52:03.1250 | BOTH | 16 | 16:52:03.1281 | 3.1 | 16:52:03.1350 | 10.0 | 10.0 | 0.0 | ON TIME | 1.0 | 1000 - 1060 | 1012 - 1071 |
+| 16:52:04.5000 | FRONT | 30 | 16:52:04.5112 | 11.2 | 16:52:04.5112 | 10.0 | 11.2 | 1.2 | LATE | 0.6 | 1890 - 1925 | - |
 
-- **Seen at** = PC time when the first camera's frame with the object was checked.
-- **LED ON at** = PC time when the ejector LED switched ON.
-- **Delay measured** = LED ON at − Seen at, measured with the PC's precise clock (`perf_counter`).
-- **FRONT pixels / REAR pixels** = where each camera saw the object: first pixel - last pixel
-  (`-` = that camera did not see it). The range covers the **whole object**, also when it touches two
-  channels (then both rows show the same range). It grows while the object is still in view.
-  REAR pixels are counted **after mirroring**, the same as the REAR picture on screen.
-  Before calibration, FRONT and REAR pixels of one object can differ a little - that is normal;
-  each camera has its own pixel numbers.
-- **Difference** = measured − set = how late the PC was. On Windows expect about **0 … +1 ms**.
-  The summary line shows the average and maximum difference.
-- What the measurement does **not** include: the time between the object crossing the scan line
-  and the PC receiving that frame (≈ one frame, 3.3 ms at 16 lines, plus network transfer).
-- A row appears ~150 ms after the object was seen (then it is sure if one or both cameras saw it).
-- Filters: **Channel**, **Seen by** (BOTH / FRONT / REAR). **Pause**, **Clear**, **Auto-scroll**.
-- **Export CSV** → `logs\ejection_log_<date_time>.csv` (opens in Excel; times include the date).
+(times in 0.1 ms, all other numbers in ms)
+
+- **Touched line at** = exact moment the object touched the decision line (camera clock).
+- **PC saw at / PC reaction** = when the program found it, and how long that took after the touch.
+- **LED ON at** = when the ejector LED switched ON (empty for MISSED).
+- **Delay measured** = LED ON at − Touched line at.
+- **Late by** = LED ON at − planned LED ON (Touched + Delay set). **0.0 = exactly on time.**
+- **Result**: **ON TIME** (late ≤ 1 ms, `late_tolerance_ms`), **LATE**, or **MISSED** (no LED).
+- **Object** = time from the object's first to its last line. **FRONT / REAR pixels** = where each camera saw it.
+- Summary line: number of objects, **ON TIME / LATE (max) / MISSED** counts, and the **PC reaction average
+  and maximum**. Your Delay must be longer than the maximum reaction.
+- Filters: **Channel**, **Seen by**, **Result**. **Pause**, **Clear**, **Auto-scroll**.
+- **Export CSV** → `logs\ejection_log_<date_time>.csv` with all these columns (times include the date).
 - The newest 20,000 rows are kept in memory; not saved automatically - use **Export CSV**.
+
+**Test with 10 objects:** Clear the log, drop 10 objects one by one → you should get 10 objects
+(an object touching 2 channels = 2 rows with the same time), all **ON TIME** if the Delay is long enough.
 
 ## 7. Calibrate channels - make FRONT and REAR agree
 
@@ -239,8 +264,8 @@ The info line of each camera says **channels: CALIBRATED** or **equal (not calib
 | **Detect: lower / upper** | LEDs only | Detection thresholds (0–255, blue). Applied on the next frame. |
 | **Pause** | screen only | Freeze the pictures. |
 | **Save snapshot** | — | Saves the newest frame of each camera, full size, as PNG in `snapshots/`. |
-| **Delay** | LEDs | Time from "camera saw it" to "ejector LED ON" (section 5b). |
-| **Blow time** | LEDs | How long the ejector LED stays ON. |
+| **Delay** | LEDs | Time from "object touched the decision line" to "ejector LED ON" (section 5b). |
+| **Blow time** | LEDs | LED stays ON until the object's last line + Delay + Blow time. |
 | **Logs** | — | Opens the ejection log (section 6). |
 | **Calibrate channels** | channels | Measure the valves so both cameras agree (section 7). |
 | **Save settings** | file | Writes frame height, exposure, V-stretch, lower/upper of both cameras, plus delay and blow time, into `camera_config.json` (old file kept as `.bak`). Without it, changes are lost when you close. |
@@ -257,9 +282,14 @@ The frame height and exposure shown are **read back from the camera**, so they a
 | `detection.colour` | Colour checked for detection: `BLUE` (like lambton-main's wave mode). |
 | `detection.min_pixels` | Hit columns needed to switch a channel ON (2). |
 | `detection.led_hold_ms` | An ejector LED is shown at least this long on screen (150). |
-| `ejector.delay_ms` | Camera saw it → ejector LED ON (2). |
-| `ejector.blow_ms` | How long the ejector LED stays ON (10). |
-| `ejector.same_object_ms` | FRONT + REAR in one channel within this time = one object (150). |
+| `ejector.delay_ms` | Object touched the decision line → ejector LED ON (10). |
+| `ejector.blow_ms` | LED stays ON until the object's last line + delay + this (10). |
+| `ejector.same_object_ms` | FRONT + REAR in one channel within this time (camera times) = one object (30). |
+| `ejector.late_tolerance_ms` | Up to this much late still counts as ON TIME (1.0). |
+| `ejector.end_gap_lines` | An object ends after this many empty lines (2). |
+| `clock.use_camera_timestamp` | `true` = exact line times from the camera clock (recommended). |
+| `clock.default_line_rate_hz` | Only used until the real line rate is measured (4800). |
+| `clock.offset_window_frames` | Camera → PC clock uses the fastest frame of the last N frames (300). |
 | `cameras.*.lower`, `upper` | Detection thresholds. |
 | `cameras.*.band_mode` | `true` = hit when the value stays INSIDE lower..upper (like lambton-main's band mode). |
 | `cameras.*.serial` | Serial number of the camera. If FRONT/REAR look swapped, swap the two numbers. |
@@ -276,8 +306,10 @@ The frame height and exposure shown are **read back from the camera**, so they a
 python tests\test_core.py     <- worker, frame height / exposure changes, grid, config
 python tests\test_leds.py     <- channel detection gives the SAME channels as lambton-main
 python tests\test_calibration.py <- simulated lenses: equal channels disagree, calibrated agree 100 %
-python tests\test_ejector.py  <- delay / blow time, either camera, one ejection per object, log, CSV,
-                                 and how exactly THIS PC keeps the delay (printed)
+python tests\test_ejector.py  <- camera clock, line by line, ON TIME / LATE / MISSED, first camera,
+                                 blow by length, log, CSV
+python tests\test_timing.py   <- REAL-TIME: 2 fake cameras with camera clocks + random delays drop
+                                 10 objects: 10 rows, delay 10 ms all ON TIME, 2 ms all LATE (~4 s)
 ```
 
 Each must print **ALL TESTS PASSED**. Run them after every change.
@@ -300,7 +332,9 @@ Not sent (see `.gitignore`): `snapshots/`, `logs/`, `.venv/`, `__pycache__/`, `c
 | no rows in Logs | nothing detected yet, or rows still waiting (~150 ms) | check the LED bar; see lower/upper |
 | one object = channel 3 in one camera, 2 or 4 in the other | channels not calibrated | **Calibrate channels** (section 7) |
 | calibration: "no object found" | wire too thin / too faint | thicker or darker wire; **Learn empty chute** first |
-| big "Difference" in the log | PC busy (other programs, many objects) | close other programs; check average, not one row |
+| many LATE rows | Delay shorter than the PC reaction | raise the Delay above the max PC reaction (Logs summary) |
+| MISSED rows | PC was very late (busy) | close other programs; raise the Delay |
+| info line says "line times: PC clock" | camera gives no timestamp | times are then less exact (about one frame) |
 | ejector LEDs on with an empty chute | lower/upper too close to the background level | lower `lower` / raise `upper` (see section 5) |
 | ejector LEDs never on | lower/upper too far away | move them closer to the background level |
 | `4096 x 10000 px`, ~1 frame/s | frame height too big | choose a smaller **Frame height** |

@@ -1,6 +1,7 @@
 """
 CORE LAYER - the "brain" between the hardware and the screen.
 
+  camera_clock.py  -> camera timestamps -> exact time of every camera line
   camera_worker.py -> reads one camera in a background thread, applies
                       setting changes, keeps status + statistics
   frame_store.py   -> holds the newest frame (safe between threads)
@@ -18,6 +19,7 @@ Rules for this layer:
     calls open / read_frame / set_frame_lines / set_exposure / close on it.
 """
 
+from core.camera_clock import CameraClock  # noqa: F401
 from core.camera_worker import CameraWorker  # noqa: F401
 from core.channel_activity import ChannelActivity  # noqa: F401
 from core.channel_detector import ChannelDetector  # noqa: F401

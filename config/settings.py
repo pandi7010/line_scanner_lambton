@@ -41,9 +41,16 @@ DEFAULTS = {
         "led_hold_ms": 150,   # an LED is SHOWN at least this long (a 10 ms blow is too short to see)
     },
     "ejector": {
-        "delay_ms": 2.0,      # camera saw it -> ejector LED ON   (lambton-main recipe RICE: 2 ms)
-        "blow_ms": 10.0,      # how long the ejector LED stays ON (lambton-main recipe RICE: 10 ms)
-        "same_object_ms": 150,  # FRONT + REAR in one channel within this time = the same object
+        "delay_ms": 10.0,     # object touched the decision line -> ejector LED ON
+        "blow_ms": 10.0,      # LED stays ON until the object's last line + delay + this
+        "same_object_ms": 30,   # FRONT + REAR in one channel within this time = the same object
+        "late_tolerance_ms": 1.0,  # up to this much late still counts as ON TIME
+        "end_gap_lines": 2,   # an object ends after this many empty camera lines
+    },
+    "clock": {
+        "use_camera_timestamp": True,   # exact line times from the camera's own clock
+        "default_line_rate_hz": 4800,   # only used until the real line rate is measured
+        "offset_window_frames": 300,    # camera -> PC clock: smallest offset of the last N frames
     },
     "cameras": {},
 }

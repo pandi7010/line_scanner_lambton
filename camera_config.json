@@ -12,7 +12,14 @@
   "ejector": {
     "delay_ms": 10.0,
     "blow_ms": 10.0,
-    "same_object_ms": 150
+    "same_object_ms": 30,
+    "late_tolerance_ms": 1.0,
+    "end_gap_lines": 2
+  },
+  "clock": {
+    "use_camera_timestamp": true,
+    "default_line_rate_hz": 4800,
+    "offset_window_frames": 300
   },
   "cameras": {
     "FRONT": {

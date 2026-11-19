@@ -26,6 +26,8 @@ The cameras are line-scan cameras: every "frame" is a short, very wide strip
 
 from ctypes import c_ubyte
 
+import time
+
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -103,6 +105,11 @@ class MindVisionCamera:
         self.frame_lines = frame_lines
         self.settings = settings or {}
         self.info = ""              # e.g. "exposure 65 us | analog gain 3 | RGB gain 100/100/140"
+        # Timing of the last frame (used by core/camera_clock.py):
+        #   camera_ts : the camera's own clock when the frame was finished (0.1 ms steps)
+        #   arrived   : PC time (time.perf_counter) when the frame reached the program
+        #   lines     : lines in the frame
+        self.last_frame_info = None
         self.handle = None          # SDK handle, None = camera is closed
         self.buffer = None          # memory where the SDK writes the colour picture
 
@@ -225,6 +232,9 @@ class MindVisionCamera:
             if e.error_code == mvsdk.CAMERA_STATUS_TIME_OUT:
                 return None                     # no new data yet - not an error
             raise CameraError(f"Camera {self.serial} read error: {e}") from e
+        arrived = time.perf_counter()           # first moment the PC has this frame
+        self.last_frame_info = {"camera_ts": int(frame_head.uiTimeStamp), "arrived": arrived,
+                                "lines": int(frame_head.iHeight)}
 
         # Step 7b + 7c: convert to colour, then ALWAYS give the raw buffer back.
         try:
