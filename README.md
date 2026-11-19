@@ -165,13 +165,19 @@ If LEDs flicker with an empty chute, move them further away. Starting values are
 
 Click **Logs**. One row per ejection:
 
-| # | Seen at | Seen by | Channel | LED ON at | Delay set (ms) | Delay measured (ms) | Difference (ms) |
-|---|---|---|---|---|---|---|---|
-| 12 | 16:52:03.125 | BOTH | 16 | 16:52:03.127 | 2.0 | 2.1 | +0.1 |
+| # | Seen at | Seen by | Channel | LED ON at | Delay set | Delay measured | Difference | FRONT pixels | REAR pixels |
+|---|---|---|---|---|---|---|---|---|---|
+| 12 | 16:52:03.125 | BOTH | 16 | 16:52:03.127 | 2.0 | 2.1 | +0.1 | 1000 - 1060 | 1012 - 1071 |
 
 - **Seen at** = PC time when the first camera's frame with the object was checked.
 - **LED ON at** = PC time when the ejector LED switched ON.
 - **Delay measured** = LED ON at − Seen at, measured with the PC's precise clock (`perf_counter`).
+- **FRONT pixels / REAR pixels** = where each camera saw the object: first pixel - last pixel
+  (`-` = that camera did not see it). The range covers the **whole object**, also when it touches two
+  channels (then both rows show the same range). It grows while the object is still in view.
+  REAR pixels are counted **after mirroring**, the same as the REAR picture on screen.
+  Before calibration, FRONT and REAR pixels of one object can differ a little - that is normal;
+  each camera has its own pixel numbers.
 - **Difference** = measured − set = how late the PC was. On Windows expect about **0 … +1 ms**.
   The summary line shows the average and maximum difference.
 - What the measurement does **not** include: the time between the object crossing the scan line

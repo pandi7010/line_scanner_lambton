@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (QDoubleSpinBox, QHBoxLayout, QLabel, QMainWindow, Q
 from config import SNAPSHOT_DIR, save_camera_settings
 from ui.calibration_window import CalibrationWindow
 from ui.camera_panel import CameraPanel
+from ui.decision_view import DecisionLineView
 from ui.led_bar import LedBar
 from ui.log_window import LogWindow
 
@@ -73,6 +74,7 @@ class MainWindow(QMainWindow):
 
         # --- 63 ejector LEDs: FRONT + REAR combined ------------------------------
         self.led_bar = LedBar(config["channels"])
+        self.decision_view = DecisionLineView(config["channels"])   # decision line -> nozzles
         self.led_min_visible_ms = config["detection"]["led_hold_ms"]
         led_title = QLabel("<b>EJECTOR LEDs</b> &nbsp; "
                            "<span style='color:#ff2828'>■</span> both cameras &nbsp; "
@@ -150,7 +152,9 @@ class MainWindow(QMainWindow):
         for panel in self.panels.values():
             layout.addWidget(panel, stretch=1)
         layout.addLayout(led_row)
+        layout.addWidget(self.decision_view)
         layout.addWidget(self.led_bar)
+        layout.setSpacing(4)
         layout.addLayout(buttons)
         central = QWidget()
         central.setLayout(layout)
@@ -188,6 +192,9 @@ class MainWindow(QMainWindow):
 
         # Ejector LEDs (ON after the delay; shown at least led_hold_ms so you can see them).
         self.led_bar.set_lit(self.ejector.lit_channels(self.led_min_visible_ms))
+        # Decision line: objects falling from the camera scan line to the nozzles.
+        self.decision_view.set_state(self.ejector.in_flight(self.led_min_visible_ms),
+                                     self.delay_box.value())
 
         now = time.monotonic()
         if now - self.last_stats_time >= 1.0:
