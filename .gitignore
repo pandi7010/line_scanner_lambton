@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Made by the program while it runs (pictures, exported logs)
+snapshots/
+logs/
+
+# Backup made by "Save settings"
+camera_config.json.bak
+
+# Output of PUSH_TO_GITHUB.bat
+push_log.txt

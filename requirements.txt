@@ -1,0 +1,5 @@
+# Camera viewer - Python packages (Python 3.10 - 3.13, 64-bit)
+# Same versions as lambton-main.
+# The MindVision SDK is NOT a pip package - install it separately (see README.md).
+PyQt5==5.15.11
+numpy==2.2.6

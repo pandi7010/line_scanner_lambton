@@ -1,0 +1,51 @@
+{
+  "channels": 63,
+  "display": {
+    "refresh_fps": 25,
+    "show_grid": true
+  },
+  "detection": {
+    "colour": "BLUE",
+    "min_pixels": 2,
+    "led_hold_ms": 150
+  },
+  "ejector": {
+    "delay_ms": 10.0,
+    "blow_ms": 10.0,
+    "same_object_ms": 150
+  },
+  "cameras": {
+    "FRONT": {
+      "serial": "075002923007",
+      "frame_lines": 16,
+      "v_stretch": 3,
+      "mirror": false,
+      "start_pixel": 19,
+      "end_pixel": 4046,
+      "lower": 68,
+      "upper": 221,
+      "band_mode": false,
+      "exposure_us": 65.0,
+      "analog_gain": 3,
+      "r_gain": 100,
+      "g_gain": 100,
+      "b_gain": 140
+    },
+    "REAR": {
+      "serial": "076011622362",
+      "frame_lines": 16,
+      "v_stretch": 3,
+      "mirror": true,
+      "start_pixel": 60,
+      "end_pixel": 3981,
+      "lower": 60,
+      "upper": 164,
+      "band_mode": false,
+      "exposure_us": 100.0,
+      "analog_gain": 3,
+      "r_gain": 80,
+      "g_gain": 80,
+      "b_gain": 85
+    }
+  }
+}
