@@ -49,6 +49,13 @@ det = ChannelDetector(ChannelMap.equal(19, 4046), 68, 221)
 f = bg.copy(); f[:, 1000:1061, 0] = 40
 print("grain 1000-1060 ->", sorted(det.detect(f)[0]), "(channel width 63.9, (1000-19)/63.9 = 15.3 -> ch 16, (1060-19)/63.9 = 16.3 -> ch 17)")
 
+# pixel ranges: one object over channels 16+17 -> both get the WHOLE object; a 2-pixel gap = same object
+f = bg.copy(); f[:, 1000:1030, 0] = 40; f[:, 1032:1061, 0] = 40; f[:, 2500:2510, 0] = 40
+active, _, pixels = det.detect_with_pixels(f)
+assert pixels[16] == (1000, 1060) and pixels[17] == (1000, 1060), pixels
+assert set(pixels) == active and all(p == (2500, 2509) for ch, p in pixels.items() if ch not in (16, 17)), pixels
+print("pixel ranges ok:", {ch: pixels[ch] for ch in sorted(pixels)})
+
 # hold time
 act = ChannelActivity(63); act.mark({5, 63, 0, 64}, now=10.0)
 assert act.active(0.15, now=10.1) == {5, 63} and act.active(0.15, now=10.2) == set()

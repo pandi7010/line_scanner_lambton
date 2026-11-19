@@ -142,8 +142,8 @@ class CameraWorker:
 
             # 5) Which channels have something in them? (EVERY frame, so no grain is missed.)
             if self.detector is not None:
-                active, self.background_level = self.detector.detect(frame)
-                self.activity.mark(active)
+                active, self.background_level, pixels = self.detector.detect_with_pixels(frame)
+                self.activity.mark(active, pixels=pixels)
 
             # 6) Hand it to the screen.
             self.frames.put(frame)

@@ -9,6 +9,7 @@ What happens to one object (example: delay 2 ms, blow 10 ms):
     10:00:00.012  ejector LED 16 switches OFF                    (ON + blow time)
 
     Log row:  seen at .000 | BOTH | ch 16 | LED ON at .002 | delay set 2.0 | measured 2.1 ms
+              | FRONT pixels 1000-1060 | REAR pixels 1012-1071
 
 Rules:
   * EITHER camera can trigger an ejection (like lambton-main merges both cameras).
@@ -93,9 +94,9 @@ class EjectScheduler:
         now = time.perf_counter() if now is None else now
 
         # 1) New objects from both cameras, in time order.
+        snap = {cam: activity.snapshot() for cam, activity in self.activities.items()}
         starts = []
-        for cam, activity in self.activities.items():
-            _, start_time, start_count = activity.snapshot()
+        for cam, (_, start_time, start_count, _, _) in snap.items():
             for i in np.flatnonzero(start_count > self._checked[cam]):
                 starts.append((float(start_time[i]), cam, int(i)))
             self._checked[cam] = start_count
@@ -103,14 +104,21 @@ class EjectScheduler:
 
         with self._lock:
             for seen, cam, i in starts:
+                count = int(snap[cam][2][i])            # which object of this camera/channel
                 obj = self._last_object.get(i)
                 if obj and cam not in obj["by"] and seen - obj["seen"] <= self.same_object:
                     obj["by"].add(cam)                  # other camera, same object
+                    obj["count"][cam] = count
                     continue
-                obj = {"channel": i + 1, "seen": seen, "by": {cam},
-                       "delay_set": self.delay, "fire_at": seen + self.delay, "on": None}
+                obj = {"channel": i + 1, "seen": seen, "by": {cam}, "count": {cam: count},
+                       "pixels": {}, "delay_set": self.delay, "fire_at": seen + self.delay, "on": None}
                 self._last_object[i] = obj
                 self._pending.append(obj)
+
+            # Keep each object's pixel range up to date while that object is still the
+            # newest one in its channel (a newer object must not overwrite it).
+            for obj in self._pending + self._to_log:
+                self._update_pixels(obj, snap)
 
             # 2) Delay over -> LED ON.
             still_waiting = []
@@ -130,6 +138,7 @@ class EjectScheduler:
             for obj in self._to_log:
                 if now >= obj["seen"] + self.same_object:
                     self.event_log.add(
+                        pixels=obj["pixels"],
                         seen_time=obj["seen"] + self._clock_offset,
                         seen_by=self._label(obj["by"]),
                         channel=obj["channel"],
@@ -140,6 +149,15 @@ class EjectScheduler:
                 else:
                     keep.append(obj)
             self._to_log = keep
+
+    @staticmethod
+    def _update_pixels(obj, snap):
+        """obj["pixels"][camera] = (first pixel, last pixel), while it is still the same object."""
+        i = obj["channel"] - 1
+        for cam, count in obj["count"].items():
+            _, _, start_count, pixel_from, pixel_to = snap[cam]
+            if int(start_count[i]) == count and not np.isnan(pixel_from[i]):
+                obj["pixels"][cam] = (int(pixel_from[i]), int(pixel_to[i]))
 
     def next_fire_time(self):
         with self._lock:

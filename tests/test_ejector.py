@@ -91,13 +91,32 @@ assert [x[:3] for x in r] == [(3, "FRONT", 0.0), (4, "FRONT", 20.0)], r
 assert r[0][3] == 0.0 and 20.0 <= r[1][3] <= 20.1, r
 print("delay 0 and delay change ok")
 
+# 4b) pixel ranges in the log: FRONT first, REAR 1 frame later; the object grows in the 2nd frame
+s = Scene(delay_ms=2.0)
+s.act["FRONT"].mark({16, 17}, now=s.t, pixels={16: (1000, 1050), 17: (1000, 1050)})
+s.act["REAR"].mark(set(), now=s.t)
+s.ej.check_once(now=s.t)
+s.t += FRAME
+s.act["FRONT"].mark({16, 17}, now=s.t, pixels={16: (998, 1060), 17: (998, 1060)})
+s.act["REAR"].mark({16, 17}, now=s.t, pixels={16: (1012, 1071), 17: (1012, 1071)})
+s.ej.check_once(now=s.t)
+s.idle(0.3)
+ev = s.log.events_since(0)
+assert [(e.channel, e.seen_by, e.pixels) for e in ev] == [
+    (16, "BOTH", {"FRONT": (998, 1060), "REAR": (1012, 1071)}),
+    (17, "BOTH", {"FRONT": (998, 1060), "REAR": (1012, 1071)})], [(e.channel, e.pixels) for e in ev]
+assert ev[0].pixels_text("FRONT") == "998 - 1060" and ev[0].pixels_text("REAR") == "1012 - 1071"
+print("pixels in log ok:", ev[0].pixels_text("FRONT"), "|", ev[0].pixels_text("REAR"))
+
 # 5) CSV
 path = os.path.join(tempfile.gettempdir(), "eject_test.csv")
 write_csv(path, s.log.events_since(0))
 with open(path) as f:
     rows = list(csv.reader(f))
-assert rows[0] == ["seen_at", "seen_by", "channel", "led_on_at", "delay_set_ms",
-                   "delay_measured_ms", "difference_ms"] and len(rows) == 3, rows
+assert rows[0] == ["seen_at", "seen_by", "channel", "led_on_at", "delay_set_ms", "delay_measured_ms",
+                   "difference_ms", "front_pixel_from", "front_pixel_to", "rear_pixel_from",
+                   "rear_pixel_to"] and len(rows) == 3, rows
+assert rows[1][7:] == ["998", "1060", "1012", "1071"], rows[1]
 print("csv ok:", rows[2])
 
 # 6) real threads: cameras + scheduler, measure how exact this PC is
@@ -170,5 +189,10 @@ for ch in (16, 17):
     assert len(by.get((ch, "BOTH"), [])) >= 15, by.keys()
     assert len(by.get((ch, "FRONT"), [])) + len(by.get((ch, "REAR"), [])) <= 1, by.keys()
 assert all(b == "FRONT" for ch, b in by if ch in (47, 48))
+both_rows = [e for e in ev if e.seen_by == "BOTH"]
+assert all(e.pixels == {"FRONT": (1000, 1059), "REAR": (1000, 1059)} for e in both_rows), \
+    {(e.channel, str(e.pixels)) for e in both_rows}
+assert all(e.pixels == {"FRONT": (3000, 3059)} for e in ev if e.channel in (47, 48))
+print("threads: pixels in log ok, e.g.", both_rows[0].pixels)
 assert diffs.min() >= -0.01 and diffs.max() < 5.0, diffs
 print("ALL TESTS PASSED")

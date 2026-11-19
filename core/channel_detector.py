@@ -29,6 +29,7 @@ No PyQt5, no camera SDK: just numpy.
 import numpy as np
 
 COLOUR_INDEX = {"BLUE": 0, "GREEN": 1, "RED": 2}     # frames are B, G, R
+MAX_GAP = 2         # object pixels with a gap of up to 2 pixels belong to the same object
 
 
 class ChannelDetector:
@@ -53,12 +54,23 @@ class ChannelDetector:
         Returns (set of channel numbers 1..63 that are ON, background level).
         background level = median of the colour in the chute (to help choose lower/upper).
         """
+        active, level, _ = self.detect_with_pixels(frame)
+        return active, level
+
+    def detect_with_pixels(self, frame):
+        """
+        Like detect(), plus WHERE the object is:
+            pixels = {channel: (first pixel, last pixel) of the object in that channel}
+        If one object covers channels 16 and 17 (pixels 1000-1060), BOTH channels get
+        (1000, 1060) - the whole object, not only the part inside the channel.
+        Object pixels with a gap of up to MAX_GAP pixels count as one object.
+        """
         cmap = self.channel_map               # one map for the whole frame
         width = frame.shape[1]
         sp = max(0, min(int(np.ceil(cmap.start)), width))   # first column inside the chute
         ep = max(sp, min(int(np.ceil(cmap.end)), width))     # first column after the chute
         if ep - sp < cmap.channels:
-            return set(), 0
+            return set(), 0, {}
 
         # Step 1: one colour, only the chute columns.
         colour = frame[:, sp:ep, self.colour_index]
@@ -76,8 +88,21 @@ class ChannelDetector:
         # Steps 3-5: hit columns -> channels with enough hits.
         hit_columns = np.flatnonzero(hit) + sp     # camera pixel positions
         if hit_columns.size == 0:
-            return set(), level
+            return set(), level, {}
         channel = cmap.channel_of(hit_columns)     # 1..63 (0 = outside)
         counts = np.bincount(channel, minlength=cmap.channels + 1)[1:cmap.channels + 1]
         active = {int(i) + 1 for i in np.flatnonzero(counts >= self.min_pixels)}
-        return active, level
+
+        # Where is each object? Split the hit pixels into groups ("runs") that touch.
+        pixels = {}
+        if active:
+            breaks = np.flatnonzero(np.diff(hit_columns) > MAX_GAP + 1)
+            starts = np.concatenate(([0], breaks + 1))
+            ends = np.concatenate((breaks, [hit_columns.size - 1]))
+            for a, b in zip(starts, ends):
+                first, last = int(hit_columns[a]), int(hit_columns[b])
+                for ch in range(int(channel[a]), int(channel[b]) + 1):
+                    if ch in active:
+                        old = pixels.get(ch)
+                        pixels[ch] = (first, last) if old is None else (min(old[0], first), max(old[1], last))
+        return active, level, pixels

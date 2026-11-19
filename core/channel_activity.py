@@ -7,6 +7,8 @@ For each of the 63 channels this keeps:
     last_seen   : time the channel was last ON              -> LED hold (below)
     start_time  : time the channel last switched OFF -> ON  -> "a new object arrived"
     start_count : how many times it switched OFF -> ON      -> lets others notice NEW objects
+    pixel range : first / last pixel of the current object  -> shown in the log
+                  (starts with the first frame, grows while the object is still there)
 
 Why the LED hold?
     A grain passes the camera in a few milliseconds (a few frames), but the
@@ -35,11 +37,16 @@ class ChannelActivity:
         self._start_time = np.full(channels, -1e9)
         self._start_count = np.zeros(channels, dtype=np.int64)
         self._hits = np.zeros(channels, dtype=np.int64)  # frames each channel was ON
+        self._pixel_from = np.full(channels, np.nan)     # object's first pixel (per channel)
+        self._pixel_to = np.full(channels, np.nan)       # object's last pixel (per channel)
         self._previous = set()                           # channels ON in the previous frame
         self._lock = threading.Lock()
 
-    def mark(self, active_channels, now=None):
-        """Call for EVERY frame, also when nothing is ON (needed to see OFF -> ON)."""
+    def mark(self, active_channels, now=None, pixels=None):
+        """
+        Call for EVERY frame, also when nothing is ON (needed to see OFF -> ON).
+        pixels: {channel: (first pixel, last pixel)} from ChannelDetector.detect_with_pixels
+        """
         now = time.perf_counter() if now is None else now
         active = {ch for ch in active_channels if 1 <= ch <= self.channels}
         with self._lock:
@@ -53,6 +60,13 @@ class ChannelActivity:
                 idx = [ch - 1 for ch in new_objects]
                 self._start_time[idx] = now
                 self._start_count[idx] += 1
+                self._pixel_from[idx] = np.nan          # new object: forget the old range
+                self._pixel_to[idx] = np.nan
+            for ch, (first, last) in (pixels or {}).items():
+                if ch in active:
+                    i = ch - 1
+                    self._pixel_from[i] = np.fmin(self._pixel_from[i], first)
+                    self._pixel_to[i] = np.fmax(self._pixel_to[i], last)
 
     def active(self, hold=0.15, now=None):
         """Channel numbers (1..63) that were ON within the last `hold` seconds."""
@@ -62,9 +76,13 @@ class ChannelActivity:
         return {int(i) + 1 for i in recent}
 
     def snapshot(self):
-        """Copies of (last_seen, start_time, start_count) - index 0 = channel 1."""
+        """
+        Copies of (last_seen, start_time, start_count, pixel_from, pixel_to).
+        Index 0 = channel 1. pixel_from/to are NaN when unknown.
+        """
         with self._lock:
-            return self._last_seen.copy(), self._start_time.copy(), self._start_count.copy()
+            return (self._last_seen.copy(), self._start_time.copy(), self._start_count.copy(),
+                    self._pixel_from.copy(), self._pixel_to.copy())
 
     def hits(self):
         """Copy of the hit counters (index 0 = channel 1)."""

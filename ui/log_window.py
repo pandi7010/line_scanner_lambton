@@ -28,7 +28,7 @@ from core import clock_text, write_csv
 MAX_ROWS = 5000          # rows shown in the table (older rows are removed from the top)
 MAX_KEPT = 20000         # rows kept by this window (for filters and export)
 COLUMNS = ["#", "Seen at", "Seen by", "Channel", "LED ON at",
-           "Delay set (ms)", "Delay measured (ms)", "Difference (ms)"]
+           "Delay set (ms)", "Delay measured (ms)", "Difference (ms)", "FRONT pixels", "REAR pixels"]
 
 
 class LogWindow(QWidget):
@@ -41,7 +41,7 @@ class LogWindow(QWidget):
         self.paused = False
 
         self.setWindowTitle("Lambton - Ejection Log")
-        self.resize(950, 650)
+        self.resize(1150, 650)
 
         # --- filters and buttons --------------------------------------------
         self.channel_filter = QSpinBox()
@@ -83,7 +83,8 @@ class LogWindow(QWidget):
 
         info = QLabel("One row = one ejection. <b>Seen at</b> = first camera saw the object. "
                       "<b>LED ON at</b> = ejector LED switched ON. <b>Delay measured</b> = LED ON at "
-                      "- Seen at. <b>Difference</b> = measured - set (how late the PC was).")
+                      "- Seen at. <b>Difference</b> = measured - set (how late the PC was). "
+                      "<b>FRONT / REAR pixels</b> = where each camera saw the object (first - last pixel).")
         info.setWordWrap(True)
 
         # --- table ----------------------------------------------------------
@@ -138,7 +139,8 @@ class LogWindow(QWidget):
             row = self.table.rowCount()
             self.table.insertRow(row)
             values = [e.seq, clock_text(e.seen_time), e.seen_by, e.channel, clock_text(e.on_time),
-                      f"{e.delay_set_ms:.1f}", f"{e.delay_ms:.1f}", f"{e.difference_ms:+.1f}"]
+                      f"{e.delay_set_ms:.1f}", f"{e.delay_ms:.1f}", f"{e.difference_ms:+.1f}",
+                      e.pixels_text("FRONT"), e.pixels_text("REAR")]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setTextAlignment(Qt.AlignCenter)
