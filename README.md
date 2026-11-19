@@ -156,6 +156,23 @@ Same "background" detection lambton-main uses (`evaluate_ejectors_instant`):
 - A 10 ms blow is too short to see on a screen that redraws every 40 ms, so each LED is
   **shown** at least 150 ms (`led_hold_ms`). The log has the real times.
 
+### 5c. The decision line (red dotted line in each camera picture)
+
+A camera frame is built line by line: the **top row is the oldest** line, the **bottom row is the
+newest** line = "now". The **red dotted DECISION LINE** marks that newest line: the place where the
+camera sees an object and the decision is made. The **Delay** starts from here; after the Delay the
+ejector LED switches ON.
+
+```
+ camera picture:  ┌──────────────────────────────────────┐  <- oldest line
+                  │      ███                             │
+                  │      ███        (grid lines)         │
+ DECISION LINE  - ┼ - - -███- - - - - - - - - - - - - - -┼  <- newest line = now
+                  └──────────────────────────────────────┘
+```
+
+It is only shown: detection still checks **every** line of every frame, so no grain is missed.
+
 **Choosing lower / upper:** the info line shows the **background level** of the empty chute
 (about 93 with the current exposure). `lower` must be **below** it and `upper` **above** it.
 If LEDs flicker with an empty chute, move them further away. Starting values are lambton-main's

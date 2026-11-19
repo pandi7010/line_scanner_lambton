@@ -14,6 +14,12 @@ Grid:
     the 64 channel boundaries of the camera's ChannelMap (63 channels, one per valve):
     equal slices between start_pixel and end_pixel, or calibrated on the real valves. Channel numbers are written
     under the picture. The first and last line (chute edges) are red.
+
+Decision line (red dotted, across the picture):
+    A frame is built line by line: the TOP row is the oldest line, the BOTTOM row is
+    the NEWEST line = "now". The red dotted line marks that newest line: the place where
+    the camera sees an object and the decision is made (the Delay starts from here).
+    It is only shown - detection still checks every line of every frame.
 """
 
 import numpy as np
@@ -24,6 +30,7 @@ from PyQt5.QtWidgets import QSizePolicy, QWidget
 NUMBER_STRIP_HEIGHT = 16                 # space under the picture for channel numbers
 GRID_COLOUR = QColor(255, 230, 0, 170)   # yellow, a bit transparent
 EDGE_COLOUR = QColor(255, 60, 60)        # red
+DECISION_COLOUR = QColor(255, 30, 30)    # red dotted decision line
 TEXT_COLOUR = QColor(200, 200, 200)
 
 
@@ -92,6 +99,23 @@ class CameraView(QWidget):
 
         if self.show_grid and self.grid_positions and self.frame_width:
             self._draw_grid(painter, rect)
+
+        self._draw_decision_line(painter, rect)
+
+    def _draw_decision_line(self, painter, rect):
+        """Red dotted line on the newest camera line (bottom row of the picture), with a label."""
+        if not self.frame_lines:
+            return
+        row_height = rect.height() / self.frame_lines
+        y = rect.bottom() - row_height / 2               # middle of the newest row
+        painter.setPen(QPen(DECISION_COLOUR, 2, Qt.DotLine))
+        painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y))
+
+        label = QRectF(rect.left() + 4, max(0.0, y - 16), 112, 13)
+        painter.fillRect(label, QColor(0, 0, 0, 170))
+        painter.setPen(DECISION_COLOUR)
+        painter.setFont(QFont("Arial", 7, QFont.Bold))
+        painter.drawText(label, Qt.AlignCenter, "DECISION LINE (now)")
 
     def _draw_grid(self, painter, rect):
         scale = rect.width() / self.frame_width          # camera pixel -> screen pixel

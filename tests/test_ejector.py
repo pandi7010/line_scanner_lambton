@@ -108,25 +108,6 @@ assert [(e.channel, e.seen_by, e.pixels) for e in ev] == [
 assert ev[0].pixels_text("FRONT") == "998 - 1060" and ev[0].pixels_text("REAR") == "1012 - 1071"
 print("pixels in log ok:", ev[0].pixels_text("FRONT"), "|", ev[0].pixels_text("REAR"))
 
-# 4c) decision-line picture: dot falls from 0 (decision line) to 1 (nozzle), then disappears
-act = {"FRONT": ChannelActivity(63), "REAR": ChannelActivity(63)}
-ej = EjectScheduler(act, EventLog(), delay_ms=10.0)
-act["FRONT"].mark({5}, now=0.0)
-ej.check_once(now=0.0)
-pic = lambda t: [(o["channel"], round(o["progress"], 2), o["fired"]) for o in ej.in_flight(150, now=t)]  # noqa: E731
-assert pic(0.0) == [(5, 0.0, False)], pic(0.0)
-ej.check_once(now=0.010)                                  # LED ON after 10 ms
-assert pic(0.075) == [(5, 0.5, True)], pic(0.075)        # shown over 150 ms -> half way
-assert pic(0.150) == [(5, 1.0, True)] and pic(0.400) == [], (pic(0.150), pic(0.400))
-ej.set_timing(delay_ms=400.0)                             # long delay: real speed is shown
-act["FRONT"].mark(set(), now=1.0)
-act["FRONT"].mark({9}, now=1.01)
-ej.check_once(now=1.01)
-assert pic(1.21) == [(9, 0.5, False)], pic(1.21)          # half way, not fired yet
-ej.check_once(now=1.411)
-assert pic(1.411) == [(9, 1.0, True)], pic(1.411)
-print("decision line picture ok")
-
 # 5) CSV
 path = os.path.join(tempfile.gettempdir(), "eject_test.csv")
 write_csv(path, s.log.events_since(0))

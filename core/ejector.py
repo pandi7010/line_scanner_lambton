@@ -53,7 +53,6 @@ class EjectScheduler:
         self._last_object = {}           # channel index -> newest object in that channel
         self._pending = []               # objects waiting for their delay
         self._to_log = []                # fired objects, logged once "seen by" is final
-        self._display = []               # objects shown falling in the decision-line picture
         self._fired_at = np.full(self.channels, -1e9)   # when each LED last switched ON
         self._fired_by = [""] * self.channels           # "FRONT" / "REAR" / "BOTH"
 
@@ -89,31 +88,6 @@ class EjectScheduler:
             idx = np.flatnonzero(now - self._fired_at <= show_for)
             return {int(i) + 1: self._fired_by[i] for i in idx}
 
-    def in_flight(self, min_visible_ms=150.0, now=None):
-        """
-        Objects between the decision line (camera) and the nozzles - for the picture.
-        Returns a list of {"channel", "by", "progress", "fired"}:
-            progress 0.0 = just seen at the decision line, 1.0 = at the nozzle (LED ON).
-        A 10 ms fall cannot be seen on a screen, so the fall is shown over at least
-        `min_visible_ms` (only the picture is slower; the real times are in the log).
-        """
-        now = time.perf_counter() if now is None else now
-        shown_fall = min_visible_ms / 1000.0
-        stay_at_nozzle = 0.1                     # dot stays 0.1 s at the nozzle line
-        result, keep = [], []
-        with self._lock:
-            for obj in self._display:
-                fall = max(obj["delay_set"], shown_fall)
-                progress = (now - obj["seen"]) / fall
-                if progress > 1.0 + stay_at_nozzle / fall and obj["on"] is not None:
-                    continue                     # finished: forget it
-                keep.append(obj)
-                result.append({"channel": obj["channel"], "by": self._label(obj["by"]),
-                               "progress": min(1.0, max(0.0, progress)),
-                               "fired": obj["on"] is not None})
-            self._display = keep[-500:]          # never let the list grow without limit
-        return result
-
     # -------------------------------------------------------------- the work
     def check_once(self, now=None):
         """1) find new objects  2) switch LEDs ON when their delay is over  3) write log rows."""
@@ -140,9 +114,6 @@ class EjectScheduler:
                        "pixels": {}, "delay_set": self.delay, "fire_at": seen + self.delay, "on": None}
                 self._last_object[i] = obj
                 self._pending.append(obj)
-                self._display.append(obj)
-                if len(self._display) > 1000:     # no window reading it -> keep it small
-                    del self._display[:-1000]
 
             # Keep each object's pixel range up to date while that object is still the
             # newest one in its channel (a newer object must not overwrite it).
