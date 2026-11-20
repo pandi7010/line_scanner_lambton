@@ -2,7 +2,8 @@
   "channels": 63,
   "display": {
     "refresh_fps": 25,
-    "show_grid": true
+    "show_grid": true,
+    "dark_theme": true
   },
   "detection": {
     "colour": "BLUE",

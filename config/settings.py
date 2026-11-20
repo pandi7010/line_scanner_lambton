@@ -35,6 +35,7 @@ DEFAULTS = {
     "display": {
         "refresh_fps": 25,    # screen redraws per second
         "show_grid": True,
+        "dark_theme": True,   # dark windows (easier on the eyes); False = normal light look
     },
     "detection": {
         "colour": "BLUE",     # colour that is checked (background is blue) - like lambton-main

@@ -33,6 +33,7 @@ from core import (CameraClock, CameraWorker, ChannelDetector, ChannelMap,  # noq
                   EjectScheduler, EventLog, realtime)
 from hardware import SDK_AVAILABLE, SDK_ERROR, Esp32Ejector, MindVisionCamera  # noqa: E402
 from ui import MainWindow  # noqa: E402
+from ui.theme import apply_dark_theme  # noqa: E402
 
 
 def main():
@@ -46,6 +47,8 @@ def main():
 
     # 1) Config layer
     config = load_config()
+    if config["display"].get("dark_theme", True):
+        apply_dark_theme(app)            # easier on the eyes ("dark_theme": false = light look)
 
     # Windows: camera + ejector threads run FIRST when the PC is busy (switch: "realtime").
     realtime.configure(high_priority=config["realtime"]["high_priority"],
