@@ -18,11 +18,36 @@ from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import (QDoubleSpinBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                              QPushButton, QVBoxLayout, QWidget)
 
-from config import SNAPSHOT_DIR, save_camera_settings
+from config import SNAPSHOT_DIR, save_camera_settings, save_esp32_port
+from core import realtime
 from ui.calibration_window import CalibrationWindow
 from ui.camera_panel import CameraPanel
+from ui.esp32_window import Esp32Window
 from ui.led_bar import LedBar
 from ui.log_window import LogWindow
+
+
+def _memory_mb():
+    """Memory used by this program (Windows), in MB - or None."""
+    try:
+        import ctypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", ctypes.c_ulong), ("PageFaultCount", ctypes.c_ulong),
+                        ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+        c = Counters()
+        c.cb = ctypes.sizeof(Counters)
+        kernel32, psapi = ctypes.windll.kernel32, ctypes.windll.psapi
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(Counters), ctypes.c_ulong]
+        if psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+            return c.WorkingSetSize / 1e6
+    except Exception:                    # noqa: BLE001  (not Windows, ...)
+        pass
+    return None
 
 
 class MainWindow(QMainWindow):
@@ -42,6 +67,8 @@ class MainWindow(QMainWindow):
         self.camera_configs = config["cameras"]
         self.log_window = None           # created the first time "Logs" is clicked
         self.calibration_window = None   # created the first time "Calibrate" is clicked
+        self.esp32_window = None         # created the first time "ESP32 Ejector" is clicked
+        self.esp32_port = config["esp32"]["port"]
         display = config["display"]
 
         self.setWindowTitle("Lambton - Camera Viewer")
@@ -74,11 +101,12 @@ class MainWindow(QMainWindow):
         # --- 63 ejector LEDs: FRONT + REAR combined ------------------------------
         self.led_bar = LedBar(config["channels"])
         self.led_min_visible_ms = config["detection"]["led_hold_ms"]
-        led_title = QLabel("<b>EJECTOR LEDs</b> &nbsp; "
-                           "<span style='color:#ff2828'>■</span> both cameras &nbsp; "
-                           "<span style='color:#ff9600'>■</span> FRONT only &nbsp; "
-                           "<span style='color:#00c8ff'>■</span> REAR only &nbsp; "
-                           "<span style='color:gray'>(display only - no valves are fired)</span>")
+        self.led_title_text = ("<b>EJECTOR LEDs</b> &nbsp; "
+                               "<span style='color:#ff2828'>■</span> both cameras &nbsp; "
+                               "<span style='color:#ff9600'>■</span> FRONT only &nbsp; "
+                               "<span style='color:#00c8ff'>■</span> REAR only &nbsp; ")
+        led_title = self.led_title = QLabel()
+        self._armed_shown = None         # redraw the title only when the arm state changes
 
         # Delay + blow time (sent to core.EjectScheduler).
         delay_ms, blow_ms = ejector.get_timing()
@@ -101,8 +129,19 @@ class MainWindow(QMainWindow):
         for box in (self.delay_box, self.blow_box):
             box.setKeyboardTracking(False)       # apply on Enter / arrows, not every key
             box.setMinimumWidth(95)
+        # LIVE: the next object already uses the new value.
+        # AUTOSAVE: 0.5 s after the last click it is written to camera_config.json
+        # (several quick clicks = one save), so it is kept for the next start.
         self.delay_box.valueChanged.connect(lambda v: self.ejector.set_timing(delay_ms=v))
         self.blow_box.valueChanged.connect(lambda v: self.ejector.set_timing(blow_ms=v))
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.setSingleShot(True)
+        self.autosave_timer.setInterval(500)
+        self.autosave_timer.timeout.connect(self.autosave_timing)
+        for box in (self.delay_box, self.blow_box):
+            box.valueChanged.connect(lambda _v: self.autosave_timer.start())
+        self.autosave_label = QLabel("")
+        self.autosave_label.setStyleSheet("color:gray")
 
         led_row = QHBoxLayout()
         led_row.addWidget(led_title)
@@ -112,6 +151,7 @@ class MainWindow(QMainWindow):
         led_row.addSpacing(12)
         led_row.addWidget(QLabel("Blow time:"))
         led_row.addWidget(self.blow_box)
+        led_row.addWidget(self.autosave_label)
 
         # What we already showed (to only redraw when something is new).
         self.seen = {name: {"status": -1, "settings": -1, "frame": -1} for name in workers}
@@ -145,6 +185,10 @@ class MainWindow(QMainWindow):
         buttons.addWidget(save_button)
         buttons.addWidget(logs_button)
         buttons.addWidget(calibrate_button)
+        esp32_button = QPushButton("ESP32 Ejector")
+        esp32_button.setToolTip("Connect the valve board, test valves, switch real firing on / off")
+        esp32_button.clicked.connect(self.on_esp32)
+        buttons.addWidget(esp32_button)
         buttons.addStretch()
 
         # --- put it all together ---------------------------------------------
@@ -192,6 +236,11 @@ class MainWindow(QMainWindow):
 
         # Ejector LEDs (ON after the delay; shown at least led_hold_ms so you can see them).
         self.led_bar.set_lit(self.ejector.lit_channels(self.led_min_visible_ms))
+        if self.ejector.armed != self._armed_shown:
+            self._armed_shown = self.ejector.armed
+            self.led_title.setText(self.led_title_text + (
+                "<b style='color:#c0392b'>VALVES FIRE (ESP32 armed)</b>" if self.ejector.armed
+                else "<span style='color:gray'>(display only - no valves are fired)</span>"))
 
 
         now = time.monotonic()
@@ -209,10 +258,16 @@ class MainWindow(QMainWindow):
         parts["ejector"] = getattr(self.ejector, "cpu_percent", 0.0)
         parts["screen"] = screen
         rest = max(0.0, total - sum(parts.values()))
+        memory = _memory_mb()
+        buffers = ", ".join(f"{n} {getattr(w.camera, 'sdk_buffers_in_use', None) or '?'}"
+                            for n, w in self.workers.items())
         self.statusBar().showMessage(
+            (f"Memory: {memory:,.0f} MB   |   " if memory else "") + f"SDK buffers: {buffers}   |   "
             f"Program CPU: {total:.0f} % of one core  =  "
             + "  +  ".join(f"{k} {v:.0f} %" for k, v in parts.items())
-            + f"  +  camera SDK / other {rest:.0f} %      (CPU cores on this PC: {os.cpu_count()})")
+            + f"  +  camera SDK / other {rest:.0f} %      (CPU cores on this PC: {os.cpu_count()})"
+            + f"   |   Priority: {realtime.status_text()}"
+            + f"   |   ESP32: {self._esp32_text()}")
         for name, worker in self.workers.items():
             old_frames, old_lines = self.last_counts[name]
             fps = (worker.frame_count - old_frames) / seconds
@@ -301,6 +356,16 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Save settings",
                                 "Saved to camera_config.json:\n\n" + "\n".join(lines))
 
+    def autosave_timing(self):
+        """Delay / blow time changed: write them into camera_config.json (no question asked)."""
+        ejector = {"delay_ms": round(self.delay_box.value(), 1), "blow_ms": round(self.blow_box.value(), 1)}
+        try:
+            save_camera_settings({}, ejector=ejector)
+        except Exception as e:           # noqa: BLE001
+            self.autosave_label.setText(f"<span style='color:#c0392b'>NOT saved: {e}</span>")
+            return
+        self.autosave_label.setText(f"saved {time.strftime('%H:%M:%S')}")
+
     def on_calibrate(self):
         """Open the channel calibration window."""
         if self.calibration_window is None:
@@ -323,6 +388,31 @@ class MainWindow(QMainWindow):
         for name, pts in points_per_camera.items():
             self.camera_configs[name]["channel_points"] = pts
 
+    def on_esp32(self):
+        """Open the ESP32 Ejector window (connect, test valves, arm)."""
+        if self.esp32_window is None:
+            self.esp32_window = Esp32Window(self.ejector.valves, self.ejector, saved_port=self.esp32_port,
+                                            on_port_saved=self.remember_esp32_port)
+        self.esp32_window.show()
+        self.esp32_window.raise_()
+        self.esp32_window.activateWindow()
+
+    def remember_esp32_port(self, port, baud):
+        self.esp32_port = port
+        try:
+            save_esp32_port(port, baud)
+        except Exception as e:           # noqa: BLE001
+            print(f"[ESP32] could not save the port: {e}")
+
+    def _esp32_text(self):
+        board = self.ejector.valves
+        if board is None or not board.connected:
+            return "not connected"
+        state = "VALVES FIRING" if self.ejector.armed else "connected, not armed"
+        slowest, waiting = board.read_write_stats()
+        return (f"{board.port} {state} ({self.ejector.valve_count} valve openings, "
+                f"slowest USB write {slowest:.1f} ms" + (f", {waiting} bytes waiting" if waiting else "") + ")")
+
     def on_logs(self):
         """Open the Logs window (or bring it to the front if it is already open)."""
         if self.log_window is None:
@@ -335,7 +425,11 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Window closing: stop the timer and close the cameras cleanly."""
         self.timer.stop()
-        for window in (self.log_window, self.calibration_window):
+        if self.autosave_timer.isActive():   # a change in the last 0.5 s: save it now
+            self.autosave_timer.stop()
+            self.autosave_timing()
+        self.ejector.arm(False)          # all valves OFF
+        for window in (self.log_window, self.calibration_window, self.esp32_window):
             if window is not None:
                 window.close()
         for worker in self.workers.values():

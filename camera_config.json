@@ -10,11 +10,20 @@
     "led_hold_ms": 150
   },
   "ejector": {
-    "delay_ms": 10.0,
-    "blow_ms": 10.0,
+    "delay_ms": 1.0,
+    "blow_ms": 100.0,
     "same_object_ms": 30,
     "late_tolerance_ms": 1.0,
-    "end_gap_lines": 2
+    "end_gap_lines": 8,
+    "object_join_ms": 5.0
+  },
+  "esp32": {
+    "port": "COM6",
+    "baud": 230400
+  },
+  "realtime": {
+    "high_priority": false,
+    "timer_1ms": true
   },
   "clock": {
     "use_camera_timestamp": true,
@@ -36,7 +45,14 @@
       "analog_gain": 3,
       "r_gain": 100,
       "g_gain": 100,
-      "b_gain": 140
+      "b_gain": 140,
+      "channel_points": {
+        "1": 91.1,
+        "16": 1030.3,
+        "32": 2044.4,
+        "48": 3051.0,
+        "63": 3994.8
+      }
     },
     "REAR": {
       "serial": "076011622362",
@@ -52,7 +68,14 @@
       "analog_gain": 3,
       "r_gain": 80,
       "g_gain": 80,
-      "b_gain": 85
+      "b_gain": 85,
+      "channel_points": {
+        "1": 100.8,
+        "16": 1052.7,
+        "32": 2068.5,
+        "48": 3068.0,
+        "63": 3996.6
+      }
     }
   }
 }

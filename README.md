@@ -165,7 +165,7 @@ This is the same method as lambton-main `capture_timing.py`. Only the **fastest*
 **line times: CAMERA CLOCK** when this works.
 
 **Line by line.** Every camera line is checked. An object **starts** at its first line and **ends**
-after 2 empty lines (`end_gap_lines`). So two grains in one channel with 3+ background lines between
+after 8 empty lines (`end_gap_lines`, about 1.7 ms). So two grains in one channel with 9+ background lines between
 them are **two objects** - even inside one frame.
 
 **When does the LED switch ON?**
@@ -208,15 +208,19 @@ If LEDs flicker with an empty chute, move them further away. Starting values are
 
 ## 6. Logs - when did it touch the line, when did the LED switch ON?
 
-Click **Logs**. One row per object:
+Click **Logs**. One row per **channel** of an object. An object about one channel wide touches
+2 channels and gives 2 rows (or more). **Object #** gives all rows of the same object one number:
 
-| Touched line at | Seen by | Ch | PC saw at | PC reaction | LED ON at | Delay set | Delay measured | Late by | Result | Object | FRONT pixels | REAR pixels |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 16:52:03.1250 | BOTH | 16 | 16:52:03.1281 | 3.1 | 16:52:03.1350 | 10.0 | 10.0 | 0.0 | ON TIME | 1.0 | 1000 - 1060 | 1012 - 1071 |
-| 16:52:04.5000 | FRONT | 30 | 16:52:04.5112 | 11.2 | 16:52:04.5112 | 10.0 | 11.2 | 1.2 | LATE | 0.6 | 1890 - 1925 | - |
+| Object # | Touched line at | Seen by | Ch | PC saw at | PC reaction | LED ON at | Delay set | Delay measured | Late by | Result | Object | FRONT pixels | REAR pixels |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 16:52:03.1250 | BOTH | 16 | 16:52:03.1281 | 3.1 | 16:52:03.1350 | 10.0 | 10.0 | 0.0 | ON TIME | 1.0 | 1000 - 1060 | 1012 - 1071 |
+| 2 | 16:52:04.5000 | FRONT | 30 | 16:52:04.5112 | 11.2 | 16:52:04.5112 | 10.0 | 11.2 | 1.2 | LATE | 0.6 | 1890 - 1925 | - |
 
 (times in 0.1 ms, all other numbers in ms)
 
+- **Object #** = rows in the same or a neighbour channel, within 5 ms (`object_join_ms`) of each other,
+  belong to one object. Two objects falling very close together (less than 5 ms apart, side by side)
+  can get one number - drop test objects a little apart.
 - **Touched line at** = exact moment the object touched the decision line (camera clock).
 - **PC saw at / PC reaction** = when the program found it, and how long that took after the touch.
 - **LED ON at** = when the ejector LED switched ON (empty for MISSED).
@@ -224,14 +228,19 @@ Click **Logs**. One row per object:
 - **Late by** = LED ON at − planned LED ON (Touched + Delay set). **0.0 = exactly on time.**
 - **Result**: **ON TIME** (late ≤ 1 ms, `late_tolerance_ms`), **LATE**, or **MISSED** (no LED).
 - **Object** = time from the object's first to its last line. **FRONT / REAR pixels** = where each camera saw it.
-- Summary line: number of objects, **ON TIME / LATE (max) / MISSED** counts, and the **PC reaction average
+- Summary line: **rows = objects** (e.g. "31 rows = 10 objects"), **ON TIME / LATE (max) / MISSED** counts, and the **PC reaction average
   and maximum**. Your Delay must be longer than the maximum reaction.
 - Filters: **Channel**, **Seen by**, **Result**. **Pause**, **Clear**, **Auto-scroll**.
 - **Export CSV** → `logs\ejection_log_<date_time>.csv` with all these columns (times include the date).
 - The newest 20,000 rows are kept in memory; not saved automatically - use **Export CSV**.
+- **Object snap:** click a row -> on the right you see the **picture of that object** from FRONT and REAR
+  (object + 30 pixels left/right, + 8 lines before/after; green marks = where the program saw it).
+  A camera that did **not** see it shows the picture at the other camera's place (orange marks) - so you can
+  see WHY (too small, too light ...). **Save picture** -> `snapshots\`. **Export CSV** also saves all pictures
+  into `logs\ejection_log_<time>_snaps\`. Pictures are kept for the newest 2,000 rows (`snap.keep`).
 
-**Test with 10 objects:** Clear the log, drop 10 objects one by one → you should get 10 objects
-(an object touching 2 channels = 2 rows with the same time), all **ON TIME** if the Delay is long enough.
+**Test with 10 objects:** Clear the log, drop 10 objects one by one → the summary should say
+**"… rows = 10 objects"** (an object touching 2 channels = 2 rows with the same Object #), all **ON TIME** if the Delay is long enough.
 
 ## 7. Calibrate channels - make FRONT and REAR agree
 
@@ -257,6 +266,26 @@ corrects the lens: outer channels may become a few pixels wider or narrower than
 The info line of each camera says **channels: CALIBRATED** or **equal (not calibrated)**.
 **Back to equal channels** undoes it.
 
+## 7b. ESP32 Ejector - the real valves
+
+Firmware on the board: lambton-main `esp/esp.ino` (byte protocol: byte 17 = valve 17 ON, 117 = OFF,
+`S` = all OFF, `P` = "are you there?", `W` = board watchdog: a valve closes by itself after 250 ms).
+Needs `pip install pyserial`. **Close lambton-main first** - a COM port can be used by one program only.
+
+Click **ESP32 Ejector**:
+1. **Find ESP32** (or choose the port yourself) -> **Connect**. Tries 230400, then 115200 baud.
+   After connecting: all valves OFF + board watchdog ON. The port is remembered in `camera_config.json`.
+2. **Test by hand:** Valve + Pulse (20 ms) -> **Pulse valve**, or **Walk 1 -> 63** (every valve once).
+   First with the **air OFF** (listen for the click / watch the driver LEDs), then with air ON.
+   Check that valve 17 really is the 17th nozzle from the left.
+3. **Fire valves from the cameras** (OFF at every start): every ejector LED now also opens the real valve,
+   with the same delay and blow time. The LED title says **VALVES FIRE**, the log column **Valve = FIRED**,
+   the CSV column `valve_fired = YES`.
+4. **ALL VALVES OFF** (red) = everything off and firing switched off. Disconnect / closing the program also
+   switch all valves off.
+
+Long objects: an open valve gets its ON re-sent every 100 ms, so the 250 ms board watchdog does not close it.
+
 ## 8. Controls
 
 | Control | Changes | What it does |
@@ -270,6 +299,7 @@ The info line of each camera says **channels: CALIBRATED** or **equal (not calib
 | **Save snapshot** | — | Saves the newest frame of each camera, full size, as PNG in `snapshots/`. |
 | **Delay** | LEDs | Time from "object touched the decision line" to "ejector LED ON" (section 5b). |
 | **Blow time** | LEDs | LED stays ON until the object's last line + Delay + Blow time. |
+| | | Delay + Blow time work **live** (next object) and are **saved automatically** 0.5 s after the last click ("saved 14:55:03" next to the boxes) - also while the feeder runs. |
 | **Logs** | — | Opens the ejection log (section 6). |
 | **Calibrate channels** | channels | Measure the valves so both cameras agree (section 7). |
 | **Save settings** | file | Writes frame height, exposure, V-stretch, lower/upper of both cameras, plus delay and blow time, into `camera_config.json` (old file kept as `.bak`). Without it, changes are lost when you close. |
@@ -290,7 +320,11 @@ The frame height and exposure shown are **read back from the camera**, so they a
 | `ejector.blow_ms` | LED stays ON until the object's last line + delay + this (10). |
 | `ejector.same_object_ms` | FRONT + REAR in one channel within this time (camera times) = one object (30). |
 | `ejector.late_tolerance_ms` | Up to this much late still counts as ON TIME (1.0). |
-| `ejector.end_gap_lines` | An object ends after this many empty lines (2). |
+| `ejector.end_gap_lines` | An object ends after this many empty lines (8 = about 1.7 ms; 2 split one object into pieces). |
+| `ejector.object_join_ms` | Log only: rows within this time in neighbour channels = one Object # (5; 3 counted 8 drops as 9 on 20 Nov). |
+| `snap.enabled` / `history_s` / `keep` | Object pictures in the Logs: on/off, seconds of frames kept (0.6 = ~35 MB per camera), rows that keep a picture (2000). |
+| `realtime.high_priority` | Windows: the 2 camera threads + the ejector thread run FIRST when the PC is busy (fewer LATE). Status bar shows `Priority: FRONT camera HIGH ...`. `false` = off. |
+| `realtime.timer_1ms` | Windows: 1 ms timer instead of 15.6 ms, so short waits are exact. `false` = off. |
 | `clock.use_camera_timestamp` | `true` = exact line times from the camera clock (recommended). |
 | `clock.default_line_rate_hz` | Only used until the real line rate is measured (4800). |
 | `clock.offset_window_frames` | Camera → PC clock uses the fastest frame of the last N frames (300). |
@@ -314,7 +348,15 @@ python tests\test_ejector.py  <- camera clock, line by line, ON TIME / LATE / MI
                                  blow by length, log, CSV
 python tests\test_timing.py   <- REAL-TIME: 2 fake cameras with camera clocks + random delays drop
                                  10 objects: 10 rows, delay 10 ms all ON TIME, 2 ms all LATE (~4 s)
+python tests\test_objects.py  <- Object #: rows of one object share a number (real drops of 20 Nov)
+python tests\test_realtime.py <- high priority switch
+python tests\test_esp32.py    <- ESP32 valves with a fake COM port: bytes, timing, watchdog re-send, ALL OFF
+python tests\test_snaps.py    <- object pictures for the Logs
 ```
+
+**Feeder load test** (real time, ~10 s): `python tools\stress_test.py 10 190` - 190 random grains per
+second through both fake cameras, ejector armed on a fake ESP32, pictures on. Shows ON TIME / LATE /
+MISSED and the CPU of every part. Goal: "found in time but NOT on time" = 0 (or a few, late by ~1 ms).
 
 Each must print **ALL TESTS PASSED**. Run them after every change.
 

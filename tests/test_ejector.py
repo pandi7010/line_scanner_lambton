@@ -158,8 +158,9 @@ path = os.path.join(tempfile.gettempdir(), "eject_test.csv")
 write_csv(path, s.rows())
 with open(path) as f:
     rows = list(csv.reader(f))
-assert rows[0] == ["touched_line_at", "seen_by", "channel", "pc_saw_at", "pc_reaction_ms", "led_on_at",
+assert rows[0] == ["object_no", "touched_line_at", "seen_by", "channel", "pc_saw_at", "pc_reaction_ms", "led_on_at",
                    "delay_set_ms", "delay_measured_ms", "late_by_ms", "result", "object_length_ms",
-                   "front_pixel_from", "front_pixel_to", "rear_pixel_from", "rear_pixel_to"], rows[0]
-print("csv ok:", rows[1][:11])
+                   "front_pixel_from", "front_pixel_to", "rear_pixel_from", "rear_pixel_to",
+                   "valve_fired"], rows[0]
+print("csv ok:", rows[1][:12])
 print("ALL TESTS PASSED")

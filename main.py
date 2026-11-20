@@ -13,6 +13,7 @@ main.py only CONNECTS the layers; it contains no camera or window logic:
                CameraClock       - exact time of every camera line (camera timestamps)
                EjectScheduler    - ejector LEDs: ON at touch time + delay; ON TIME / LATE / MISSED
                EventLog          - one row per ejection (Logs window)
+    hardware/  Esp32Ejector      - the 63 real valves (ESP32 over USB), off until you connect + arm
     ui/        MainWindow        - shows everything (PyQt5)
 
 IMPORTANT: a camera can be opened by ONE program at a time.
@@ -29,8 +30,8 @@ from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 from config import load_config  # noqa: E402
 from core import (CameraClock, CameraWorker, ChannelDetector, ChannelMap,  # noqa: E402
-                  EjectScheduler, EventLog)
-from hardware import SDK_AVAILABLE, SDK_ERROR, MindVisionCamera  # noqa: E402
+                  EjectScheduler, EventLog, realtime)
+from hardware import SDK_AVAILABLE, SDK_ERROR, Esp32Ejector, MindVisionCamera  # noqa: E402
 from ui import MainWindow  # noqa: E402
 
 
@@ -46,6 +47,10 @@ def main():
     # 1) Config layer
     config = load_config()
 
+    # Windows: camera + ejector threads run FIRST when the PC is busy (switch: "realtime").
+    realtime.configure(high_priority=config["realtime"]["high_priority"],
+                       timer_1ms=config["realtime"]["timer_1ms"])
+
     if not SDK_AVAILABLE:
         print(f"[ERROR] MindVision SDK not available: {SDK_ERROR}")
         print("        The window will open, but no camera can connect.")
@@ -56,6 +61,7 @@ def main():
         camera = MindVisionCamera(
             str(cam_cfg["serial"]).strip(),
             frame_lines=int(cam_cfg["frame_lines"]),
+            sdk_buffers=int(cam_cfg["sdk_buffers"]),
             settings=cam_cfg,               # exposure + gains, applied like lambton-main
         )
         channel_map = ChannelMap.from_config(cam_cfg, config["channels"])   # calibrated if measured
@@ -70,15 +76,23 @@ def main():
                             offset_window_frames=config["clock"]["offset_window_frames"],
                             use_camera_timestamp=config["clock"]["use_camera_timestamp"])
         workers[name] = CameraWorker(name, camera, mirror=bool(cam_cfg["mirror"]), detector=detector,
-                                     clock=clock, end_gap=config["ejector"]["end_gap_lines"])
+                                     clock=clock, end_gap=config["ejector"]["end_gap_lines"],
+                                     snap_seconds=config["snap"]["history_s"] if config["snap"]["enabled"] else 0)
 
     # Ejector: either camera triggers; LED ON after the delay, for the blow time.
-    event_log = EventLog()
     ej = config["ejector"]
+    event_log = EventLog(object_join_ms=ej["object_join_ms"],     # rows of one object share a number
+                         keep_snaps=config["snap"]["keep"])
     ejector = EjectScheduler({name: w.activity for name, w in workers.items()}, event_log,
                              delay_ms=ej["delay_ms"], blow_ms=ej["blow_ms"],
                              same_object_ms=ej["same_object_ms"],
-                             late_tolerance_ms=ej["late_tolerance_ms"])
+                             late_tolerance_ms=ej["late_tolerance_ms"],
+                             histories={name: w.history for name, w in workers.items()})   # object snaps
+
+    # Real valves: the ejector ESP32. NOT connected at start, valves fire only after
+    # "Connect" + "Fire valves from the cameras" in the ESP32 Ejector window.
+    valve_board = Esp32Ejector()
+    ejector.set_valves(valve_board)
 
     # 4) UI layer
     window = MainWindow(workers, config, ejector, event_log)
@@ -89,7 +103,8 @@ def main():
     ejector.start()
 
     exit_code = app.exec_()             # runs until the window is closed
-    ejector.stop()
+    ejector.stop()                      # all valves OFF
+    valve_board.close()
     sys.exit(exit_code)
 
 

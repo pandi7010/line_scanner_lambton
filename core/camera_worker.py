@@ -27,16 +27,31 @@ import time
 
 import numpy as np
 
+from core import realtime
 from core.camera_clock import CameraClock
 from core.channel_activity import ChannelActivity
+from core.frame_history import FrameHistory
 from core.frame_store import FrameStore
 
 RETRY_SECONDS = 3       # wait this long before trying to (re)connect a camera
 
 
+def mirror_frame(frame):
+    """
+    Flip left <-> right, 3x faster than frame[:, ::-1] (0.08 instead of 0.24 ms per
+    4096 x 16 frame): the 3 colour bytes of a pixel are moved as ONE item.
+    """
+    frame = np.ascontiguousarray(frame)
+    lines, width = frame.shape[:2]
+    if frame.ndim == 3 and frame.shape[2] == 3 and frame.dtype == np.uint8:
+        pixels = frame.reshape(lines, width * 3).view("V3")          # one item = one pixel (B, G, R)
+        return pixels[:, ::-1].copy().view(np.uint8).reshape(lines, width, 3)
+    return np.ascontiguousarray(frame[:, ::-1])
+
+
 class CameraWorker:
 
-    def __init__(self, name, camera, mirror=False, detector=None, clock=None, end_gap=2):
+    def __init__(self, name, camera, mirror=False, detector=None, clock=None, end_gap=2, snap_seconds=0.6):
         """
         name     : "FRONT" or "REAR"
         camera   : a hardware camera object (e.g. hardware.MindVisionCamera)
@@ -44,6 +59,7 @@ class CameraWorker:
         detector : core.ChannelDetector, or None for no channel detection
         clock    : core.CameraClock (camera timestamps -> exact line times); None = a new one
         end_gap  : an object ends after this many empty lines
+        snap_seconds : keep this many seconds of frames for object snaps (0 = no snaps)
         """
         self.name = name
         self.camera = camera
@@ -51,6 +67,7 @@ class CameraWorker:
         self.detector = detector
         self.clock = clock if clock is not None else CameraClock()
         self.frames = FrameStore()
+        self.history = FrameHistory(snap_seconds) if snap_seconds > 0 else None   # for object snaps
         self.activity = ChannelActivity(detector.channels if detector else 63, end_gap=end_gap)
         self.background_level = 0        # median colour level in the chute (for lower/upper)
         self.paused = False
@@ -112,6 +129,7 @@ class CameraWorker:
 
     # ------------------------------------------------------------ main loop
     def _run(self):
+        realtime.boost_this_thread(f"{self.name} camera")   # Windows: run this thread first
         while self._running:
 
             # 1) Not connected? Try to open the camera.
@@ -157,7 +175,7 @@ class CameraWorker:
             if self.paused:
                 continue
             if self.mirror:
-                frame = np.ascontiguousarray(frame[:, ::-1])   # flip left <-> right
+                frame = mirror_frame(frame)                      # flip left <-> right
 
             # 5) Exact time of every line (camera clock), then: which channels have
             #    something in WHICH line? (EVERY line of EVERY frame, so no grain is missed.)
@@ -167,6 +185,8 @@ class CameraWorker:
                 frame_end, line_time = self.clock.update(info.get("camera_ts"),
                                                          info.get("arrived", arrived), lines)
                 line_times = self.clock.line_times(frame_end, line_time, lines)
+                if self.history is not None:
+                    self.history.add(frame_end, line_time, frame)     # no copy: just keep it
                 rows, self.background_level, pixels = self.detector.detect_rows(frame)
                 self.activity.mark_rows(rows, line_times, time.perf_counter(), pixels)
 

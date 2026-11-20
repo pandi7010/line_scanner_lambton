@@ -27,6 +27,7 @@ CAMERA_DEFAULTS = {
     "upper": 221,             # detection: brighter than this = something there
     "band_mode": False,       # detection: True = hit when INSIDE lower..upper
     "channel_points": {},     # calibration: {valve: pixel of its centre}; empty = equal channels
+    "sdk_buffers": 8,         # frames the camera SDK may keep waiting (more = fewer lost frames, more memory)
 }
 
 DEFAULTS = {
@@ -45,7 +46,21 @@ DEFAULTS = {
         "blow_ms": 10.0,      # LED stays ON until the object's last line + delay + this
         "same_object_ms": 30,   # FRONT + REAR in one channel within this time = the same object
         "late_tolerance_ms": 1.0,  # up to this much late still counts as ON TIME
-        "end_gap_lines": 2,   # an object ends after this many empty camera lines
+        "end_gap_lines": 8,   # an object ends after this many empty camera lines (8 = ~1.7 ms)
+        "object_join_ms": 5.0,  # log: rows within 5 ms in neighbouring channels = one object
+    },
+    "snap": {
+        "enabled": True,      # Logs: small picture of every object (FRONT + REAR)
+        "history_s": 0.6,     # seconds of frames kept to cut the pictures from (~35 MB per camera)
+        "keep": 2000,         # pictures kept for the newest rows (older rows: no picture, saves memory)
+    },
+    "esp32": {
+        "port": "",           # last COM port where the ejector ESP32 answered (filled in by Connect)
+        "baud": 0,            # its baud rate (0 = try 230400, then 115200)
+    },
+    "realtime": {
+        "high_priority": False,  # Windows: camera + ejector threads first. OFF: on Windows it made LATE WORSE (stress_test compare, 20 Nov: 926 vs 408 LATE)
+        "timer_1ms": True,       # Windows: 1 ms timer instead of 15.6 ms (exact short waits)
     },
     "clock": {
         "use_camera_timestamp": True,   # exact line times from the camera's own clock
@@ -108,5 +123,16 @@ def save_camera_settings(values, path=CONFIG_FILE, ejector=None):
     if ejector:
         data.setdefault("ejector", {}).update(ejector)
 
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def save_esp32_port(port, baud, path=CONFIG_FILE):
+    """Remember the COM port + baud rate where the ejector ESP32 answered (keeps everything else)."""
+    data = {}
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    data["esp32"] = {"port": port, "baud": int(baud or 0)}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)

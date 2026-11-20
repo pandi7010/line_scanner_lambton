@@ -51,6 +51,18 @@ class CameraError(Exception):
     """Raised when a camera cannot be found, opened or read."""
 
 
+def _read_sys_option(name):
+    """Read an SDK system option (e.g. "NumBuffers") as text, or None."""
+    try:
+        from ctypes import create_string_buffer
+        buffer = create_string_buffer(64)
+        if mvsdk._sdk.CameraGetSysOption(name.encode(), buffer) == 0:
+            return buffer.value.decode(errors="ignore")
+    except Exception:                           # noqa: BLE001
+        pass
+    return None
+
+
 def serial_number(device_info):
     """Serial number of a camera from the device list, e.g. '075002923007'."""
     return device_info.acSn.decode("utf-8", "ignore").strip("\x00").strip()
@@ -91,7 +103,7 @@ class MindVisionCamera:
         cam.close()
     """
 
-    def __init__(self, serial, frame_lines=16, settings=None):
+    def __init__(self, serial, frame_lines=16, settings=None, sdk_buffers=8):
         """
         serial      : the camera's serial number (from camera_config.json)
         frame_lines : how many lines the camera puts in one frame (lambton-main uses 64).
@@ -103,6 +115,10 @@ class MindVisionCamera:
         """
         self.serial = serial
         self.frame_lines = frame_lines
+        # How many frames the SDK may keep waiting for us (its default is about 3 = only ~10 ms
+        # at 16 lines). More = a short pause of Windows/Python does not lose frames.
+        self.sdk_buffers = sdk_buffers
+        self.sdk_buffers_in_use = None   # read back from the SDK after opening
         self.settings = settings or {}
         self.info = ""              # e.g. "exposure 65 us | analog gain 3 | RGB gain 100/100/140"
         # Timing of the last frame (used by core/camera_clock.py):
@@ -126,6 +142,13 @@ class MindVisionCamera:
         if device is None:
             found = ", ".join(serial_number(d) for d in devices) or "none"
             raise CameraError(f"Camera {self.serial} not found (cameras found: {found})")
+
+        # Step 2b: frame buffers of the SDK (must be set BEFORE CameraInit).
+        if self.sdk_buffers:
+            try:
+                mvsdk.CameraSetSysOption("NumBuffers", str(int(self.sdk_buffers)))
+            except Exception as e:              # noqa: BLE001
+                print(f"[CAMERA {self.serial}] could not set NumBuffers: {e}")
 
         # Step 3: open it. -1, -1 = load the settings the camera used last time.
         try:
@@ -153,6 +176,8 @@ class MindVisionCamera:
             cap = mvsdk.CameraGetCapability(self.handle)
             size = cap.sResolutionRange.iWidthMax * cap.sResolutionRange.iHeightMax * 3
             self.buffer = mvsdk.CameraAlignMalloc(size, 16)
+
+            self.sdk_buffers_in_use = _read_sys_option("NumBuffers")
 
             # Step 6: start streaming.
             mvsdk.CameraPlay(self.handle)
@@ -225,9 +250,10 @@ class MindVisionCamera:
         if self.handle is None:
             raise CameraError("Camera is not open")
 
-        # Step 7a: get raw data.
+        # Step 7a: get raw data - the OLDEST waiting frame, so no frame is ever skipped
+        # (priority 0 = CAMERA_GET_IMAGE_PRIORITY_OLDEST in CameraDefine.h).
         try:
-            raw_data, frame_head = mvsdk.CameraGetImageBuffer(self.handle, timeout_ms)
+            raw_data, frame_head = mvsdk.CameraGetImageBufferPriority(self.handle, timeout_ms, 0)
         except mvsdk.CameraException as e:
             if e.error_code == mvsdk.CAMERA_STATUS_TIME_OUT:
                 return None                     # no new data yet - not an error
