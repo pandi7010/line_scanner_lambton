@@ -167,6 +167,7 @@ class MainWindow(QMainWindow):
 
         self.last_stats_time = time.monotonic()
         self.last_counts = {name: (0, 0) for name in workers}
+        self.last_lost = {}              # lost-frame counter at the last update (per camera)
 
     # ---------------------------------------------------------------- refresh
     def refresh_screen(self):
@@ -199,6 +200,19 @@ class MainWindow(QMainWindow):
             self.last_stats_time = now
 
     def update_stats(self, seconds):
+        # How much CPU this program uses (100 % = one full CPU core), and which part uses it.
+        cpu_now, ui_now = time.process_time(), time.thread_time()     # whole program / this (screen) thread
+        total = (cpu_now - getattr(self, "_last_cpu", cpu_now)) / seconds * 100
+        screen = (ui_now - getattr(self, "_last_ui_cpu", ui_now)) / seconds * 100
+        self._last_cpu, self._last_ui_cpu = cpu_now, ui_now
+        parts = {f"{name} camera": w.cpu_percent for name, w in self.workers.items()}
+        parts["ejector"] = getattr(self.ejector, "cpu_percent", 0.0)
+        parts["screen"] = screen
+        rest = max(0.0, total - sum(parts.values()))
+        self.statusBar().showMessage(
+            f"Program CPU: {total:.0f} % of one core  =  "
+            + "  +  ".join(f"{k} {v:.0f} %" for k, v in parts.items())
+            + f"  +  camera SDK / other {rest:.0f} %      (CPU cores on this PC: {os.cpu_count()})")
         for name, worker in self.workers.items():
             old_frames, old_lines = self.last_counts[name]
             fps = (worker.frame_count - old_frames) / seconds
@@ -213,6 +227,17 @@ class MainWindow(QMainWindow):
                 text += f"   |   background level {worker.background_level} (lower/upper must be around it)"
             clock = getattr(worker, "clock", None)
             if clock is not None and worker.frame_count:
+                # Two counters:
+                #   SDK  = frames the camera SDK itself counts as lost
+                #   gaps = frames missing in the camera clock (every lost frame, any reason)
+                sdk, gaps = worker.sdk_lost, clock.missed_frames
+                old_sdk, old_gaps = self.last_lost.get(name, (sdk, gaps))
+                self.last_lost[name] = (sdk, gaps)
+                new_sdk, new_gaps = sdk - old_sdk, gaps - old_gaps
+                text += (f"   |   lost frames last second: SDK {new_sdk}, clock gaps {new_gaps}"
+                         f"   (total: SDK {sdk:,}, gaps {gaps:,})")
+                if new_sdk > 0 or new_gaps > 0:
+                    text += "  <- FRAMES LOST!"
                 text += ("   |   line times: CAMERA CLOCK" if clock.using_camera_clock
                          else "   |   line times: PC clock (no camera timestamp)")
             if worker.detector is not None:

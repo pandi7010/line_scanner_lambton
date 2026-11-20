@@ -251,6 +251,13 @@ class MindVisionCamera:
         # .copy() is important: the SDK overwrites self.buffer with the next frame.
         return frame.copy()
 
+    def frame_statistics(self):
+        """The camera SDK's own counters: {"total", "captured", "lost"} frames since opening."""
+        if self.handle is None:
+            return None
+        st = mvsdk.CameraGetFrameStatistic(self.handle)
+        return {"total": int(st.iTotal), "captured": int(st.iCapture), "lost": int(st.iLost)}
+
     # ----------------------------------------------------------------- close
     def close(self):
         """Step 8: close the camera and free the memory. Safe to call twice."""

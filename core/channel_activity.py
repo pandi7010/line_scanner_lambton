@@ -46,6 +46,7 @@ class ChannelActivity:
         self._pixel_from = np.full(channels, np.nan)
         self._pixel_to = np.full(channels, np.nan)
         self._lock = threading.Lock()
+        self.listeners = []              # functions called when a NEW object starts (wakes the ejector)
 
     # ------------------------------------------------------- camera thread
     def mark_rows(self, rows, line_times, found_time, pixels=None, end_gap=None):
@@ -57,12 +58,22 @@ class ChannelActivity:
         """
         end_gap = self.end_gap if end_gap is None else end_gap
         rows = np.asarray(rows, dtype=bool)
+        new_objects = False
         with self._lock:
+            # SPEED: empty frame -> no need to go line by line.
+            if not rows.any():
+                if self._open.any():
+                    self._gap[self._open] += rows.shape[0]
+                    ended = self._open & (self._gap > end_gap)
+                    self._open[ended] = False
+                    self._gap[ended] = 0
+                return
             for r in range(rows.shape[0]):
                 on = rows[r]
                 t = float(line_times[r])
                 new = on & ~self._open                      # OFF -> ON: a new object starts here
                 if new.any():
+                    new_objects = True
                     self._start_time[new] = t
                     self._found_time[new] = found_time
                     self._start_count[new] += 1
@@ -84,6 +95,9 @@ class ChannelActivity:
                 if 0 <= i < self.channels and seen_in_frame[i]:
                     self._pixel_from[i] = np.fmin(self._pixel_from[i], first)
                     self._pixel_to[i] = np.fmax(self._pixel_to[i], last)
+        if new_objects:
+            for listener in self.listeners:
+                listener()
 
     def mark(self, active_channels, now=None, pixels=None):
         """Simple form: the whole frame is ONE line at time `now` (objects end at once when gone)."""

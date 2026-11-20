@@ -60,6 +60,10 @@ class CameraWorker:
         self.line_count = 0
         self.frame_size = (0, 0)         # (width, lines) of the last frame
         self.brightness = 0.0            # average pixel value of the last frame (0-255)
+        self.sdk_lost = 0                # camera SDK's own "lost frames" counter (if it has one)
+        self.cpu_percent = 0.0           # CPU used by THIS thread (100 = one full core)
+        self._cpu_mark = None
+        self._next_stats = 0.0
 
         self._lock = threading.Lock()
         self._status = ("Waiting...", False)
@@ -133,11 +137,22 @@ class CameraWorker:
                 continue
 
             # 4) Statistics.
+            self._measure_cpu()
+            if time.monotonic() >= self._next_stats and hasattr(self.camera, "frame_statistics"):
+                self._next_stats = time.monotonic() + 1.0          # once per second is enough
+                try:
+                    stats = self.camera.frame_statistics()
+                    if stats:
+                        self.sdk_lost = stats["lost"]
+                except Exception:        # noqa: BLE001
+                    pass
             self.frame_count += 1
             self.line_count += frame.shape[0]
             self.frame_size = (frame.shape[1], frame.shape[0])
-            # Average pixel value 0 (black) ... 255 (white); every 16th pixel is enough.
-            self.brightness = float(frame[:, ::16].mean())
+            # Average pixel value 0 (black) ... 255 (white), only for the info line:
+            # once per second (every 300th frame), every 16th pixel is enough.
+            if self.frame_count % 300 == 1:
+                self.brightness = float(frame[:, ::16].mean())
 
             if self.paused:
                 continue
@@ -206,6 +221,15 @@ class CameraWorker:
         with self._lock:
             self._status = (text, ok)
             self._status_version += 1
+
+    def _measure_cpu(self):
+        """CPU time of this thread per second of real time (thread_time = only this thread)."""
+        now, cpu = time.monotonic(), time.thread_time()
+        if self._cpu_mark is None:
+            self._cpu_mark = (now, cpu)
+        elif now - self._cpu_mark[0] >= 1.0:
+            self.cpu_percent = (cpu - self._cpu_mark[1]) / (now - self._cpu_mark[0]) * 100
+            self._cpu_mark = (now, cpu)
 
     def _sleep(self, seconds):
         """Sleep in small steps so stop() stays fast."""

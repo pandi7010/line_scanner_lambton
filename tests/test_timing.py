@@ -26,6 +26,7 @@ from core import (CameraClock, CameraWorker, ChannelDetector, ChannelMap,  # noq
                   EjectScheduler, EventLog)
 
 assert "PyQt5" not in sys.modules, "core must not import PyQt5"
+sys.setswitchinterval(0.0005)       # the same as main.py (switch threads every 0.5 ms)
 LINE_TIME = 1.0 / 4800
 LINES = 16
 BASE_LATENCY = 0.0005               # fastest frame transfer (no clock can see this part)
@@ -58,10 +59,11 @@ class TimedCamera:
         self.k += 1
         frame_end = self.t0 + (first + LINES - 1) * LINE_TIME        # newest line of this frame
         arrive = frame_end + BASE_LATENCY + self.rng.uniform(0, JITTER)
+        # A real camera waits inside the camera SDK (C code) - other threads keep running.
         while time.perf_counter() < arrive - 0.0015:
             time.sleep(0.0005)
         while time.perf_counter() < arrive:
-            pass
+            time.sleep(0)
         frame = self.bg.copy()
         for start in self.objects:
             for line in range(start, start + 5):

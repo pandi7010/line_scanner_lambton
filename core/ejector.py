@@ -29,6 +29,9 @@ import time
 import numpy as np
 
 
+SPIN_S = 0.0007     # the last 0.7 ms before an LED is due: check continuously (sleep is not exact)
+
+
 class EjectScheduler:
 
     def __init__(self, activities, event_log, delay_ms=10.0, blow_ms=10.0, same_object_ms=30.0,
@@ -64,6 +67,12 @@ class EjectScheduler:
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
+        self.cpu_percent = 0.0           # CPU used by the ejector thread (100 = one full core)
+        # The cameras wake us when a NEW object starts, so we do not have to check 1000x per second.
+        self._wake = threading.Event()
+        for activity in activities.values():
+            if hasattr(activity, "listeners"):
+                activity.listeners.append(self._wake.set)
 
     # ------------------------------------------------------------- settings
     def set_timing(self, delay_ms=None, blow_ms=None):
@@ -211,12 +220,29 @@ class EjectScheduler:
 
     def _run(self):
         """
-        Check about every 1 ms. When an LED is due in less than 2 ms we do not
-        sleep (Windows sleep is not precise enough) but check continuously.
+        Check about every 1 ms. When an LED is due soon, sleep until 0.7 ms before it,
+        then check continuously (Windows sleep is not exact enough) - and after every
+        check STEP ASIDE (time.sleep(0)) so the camera threads can run. Without that,
+        this loop kept the camera threads waiting and frames were lost.
         """
+        mark = (time.monotonic(), time.thread_time())
         while self._running:
             self.check_once()
+            now = time.monotonic()
+            if now - mark[0] >= 1.0:
+                cpu = time.thread_time()
+                self.cpu_percent = (cpu - mark[1]) / (now - mark[0]) * 100
+                mark = (now, cpu)
             due = self.next_fire_time()
-            if due is not None and due - time.perf_counter() < 0.002:
-                continue                     # an LED is due very soon: no sleep
-            time.sleep(0.001)
+            left = None if due is None else due - time.perf_counter()
+            if left is None:
+                # Nothing waiting: sleep until a camera reports a new object
+                # (look again every 10 ms while log rows are still open, else every 100 ms).
+                self._wake.wait(0.01 if self._to_log else 0.1)
+                self._wake.clear()
+            elif left > 0.002:
+                time.sleep(0.001)            # an LED is due later: 1 ms rhythm
+            elif left > SPIN_S:
+                time.sleep(left - SPIN_S)    # sleep until shortly before the LED is due
+            else:
+                time.sleep(0)                # last moment: check again at once, but let others run

@@ -24,7 +24,7 @@ Decision line (red dotted, across the picture):
 
 import numpy as np
 from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import QSizePolicy, QWidget
 
 NUMBER_STRIP_HEIGHT = 16                 # space under the picture for channel numbers
@@ -68,6 +68,7 @@ class CameraView(QWidget):
     def set_grid(self, positions, show):
         self.grid_positions = positions
         self.show_grid = show
+        self._grid_version = getattr(self, "_grid_version", 0) + 1     # overlay must be drawn again
         self.update()
 
     def set_v_stretch(self, v_stretch):
@@ -94,13 +95,25 @@ class CameraView(QWidget):
             return
 
         rect = self._picture_rect()
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.drawImage(rect, self.image)
+        painter.drawImage(rect, self.image)          # fast scaling (the picture changes 25x per second)
 
-        if self.show_grid and self.grid_positions and self.frame_width:
-            self._draw_grid(painter, rect)
+        # SPEED: grid lines, channel numbers and decision line are drawn ONCE into a
+        # transparent picture ("overlay") and only drawn again when something changes.
+        painter.drawPixmap(0, 0, self._overlay(rect))
 
-        self._draw_decision_line(painter, rect)
+    def _overlay(self, rect):
+        key = (self.width(), self.height(), rect.top(), rect.height(), self.frame_width, self.frame_lines,
+               self.show_grid, getattr(self, "_grid_version", 0))
+        if getattr(self, "_overlay_key", None) != key:
+            pixmap = QPixmap(self.size())
+            pixmap.fill(Qt.transparent)
+            p = QPainter(pixmap)
+            if self.show_grid and self.grid_positions and self.frame_width:
+                self._draw_grid(p, rect)
+            self._draw_decision_line(p, rect)
+            p.end()
+            self._overlay_key, self._overlay_pixmap = key, pixmap
+        return self._overlay_pixmap
 
     def _draw_decision_line(self, painter, rect):
         """Red dotted line on the newest camera line (bottom row of the picture), with a label."""

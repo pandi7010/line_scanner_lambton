@@ -35,6 +35,11 @@ from ui import MainWindow  # noqa: E402
 
 
 def main():
+    # Let Python switch between threads every 0.5 ms (default 5 ms). Otherwise one busy
+    # thread (e.g. the ejector timing) can keep a camera thread waiting -> lost frames.
+    # (lambton-main does the same: gil_switch_interval_ms 0.5)
+    sys.setswitchinterval(0.0005)
+
     # The Qt application must exist before any window is made.
     app = QApplication(sys.argv)
 

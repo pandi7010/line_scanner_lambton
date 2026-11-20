@@ -117,7 +117,16 @@ class ChannelDetector:
             hit = (colour > self.lower) & (colour < self.upper)
         else:
             hit = (colour < self.lower) | (colour > self.upper)
-        level = int(np.median(colour.min(axis=0)))
+
+        # Background level is only for the info line: measuring it every 30th frame is enough.
+        self._level_count = getattr(self, "_level_count", 0) + 1
+        if self._level_count % 30 == 1 or not hasattr(self, "_level"):
+            self._level = int(np.median(colour.min(axis=0)))
+        level = self._level
+
+        # SPEED: most frames are empty -> nothing more to do.
+        if not hit.any():
+            return np.zeros((lines, cmap.channels), dtype=bool), level, {}
 
         # Where does each channel start in these columns? (kept until the map changes)
         key = (id(cmap), sp, ep)

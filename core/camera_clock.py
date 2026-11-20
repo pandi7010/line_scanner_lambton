@@ -45,6 +45,7 @@ class CameraClock:
         self._camera_s = 0.0             # camera time in seconds (wrap removed)
         self.line_time = None            # seconds per line, measured
         self.using_camera_clock = False  # True once camera timestamps are being used
+        self.missed_frames = 0           # frames the program never got (gaps in the camera clock)
 
     def update(self, camera_ts, arrived, lines):
         """
@@ -64,6 +65,11 @@ class CameraClock:
         else:
             step = ((raw - self._last_raw) % WRAP) * TS_UNIT_S      # also correct over the wrap
             self._camera_s += step
+            # A gap of 2+ frame times in the camera clock = frames that never reached us.
+            if self.line_time is not None and 0 < step < 1.0:
+                frame_time = lines * self.line_time
+                if step > 1.5 * frame_time:
+                    self.missed_frames += int(round(step / frame_time)) - 1
             if 0 < step < 1.0:
                 lt = step / lines
                 if 0.2 * self.default_line_time < lt < 5.0 * self.default_line_time:

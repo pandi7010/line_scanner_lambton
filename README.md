@@ -156,6 +156,10 @@ Same "background" detection lambton-main uses (`evaluate_ejectors_instant`):
 - camera clock → PC clock with the **fastest** frame of the last 300 (Windows/network delays only add)
 - line r of a frame with N lines was scanned at  *frame end − (N − 1 − r) × line time*
 
+The info line also shows **lost frames** (from the camera SDK's counter and from gaps in the camera
+clock): **0 in the last second** is required - a lost frame can hide an object. The program lets Python
+switch threads every 0.5 ms (like lambton-main), so a busy thread cannot hold up the cameras.
+
 This is the same method as lambton-main `capture_timing.py`. Only the **fastest** transfer time
 (well under 1 ms on GigE) cannot be seen by any clock. The info line of each camera says
 **line times: CAMERA CLOCK** when this works.
@@ -335,6 +339,8 @@ Not sent (see `.gitignore`): `snapshots/`, `logs/`, `.venv/`, `__pycache__/`, `c
 | many LATE rows | Delay shorter than the PC reaction | raise the Delay above the max PC reaction (Logs summary) |
 | MISSED rows | PC was very late (busy) | close other programs; raise the Delay |
 | info line says "line times: PC clock" | camera gives no timestamp | times are then less exact (about one frame) |
+| info line: "lost frames: … N in the last second <- PC TOO SLOW!" | the PC did not take every frame in time - objects can be missed | close other programs; use a bigger frame height (e.g. 32 lines = half as many frames) |
+| frames/s lower than the camera's line rate / frame height | the same: frames are being lost | as above |
 | ejector LEDs on with an empty chute | lower/upper too close to the background level | lower `lower` / raise `upper` (see section 5) |
 | ejector LEDs never on | lower/upper too far away | move them closer to the background level |
 | `4096 x 10000 px`, ~1 frame/s | frame height too big | choose a smaller **Frame height** |
