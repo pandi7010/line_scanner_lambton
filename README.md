@@ -286,6 +286,21 @@ Click **ESP32 Ejector**:
 
 Long objects: an open valve gets its ON re-sent every 100 ms, so the 250 ms board watchdog does not close it.
 
+## 7d. Frame check - are ALL frames processed, and how fast?
+
+Button **Frame check** -> frames per camera (1000) -> **Start**. The machine keeps working (feeder ON or OFF);
+the next 1000 frames of each camera are counted and timed. Report per camera:
+1. **Ejector status calculated** for how many frames (= channels per line worked out) - must be all.
+2. **Missed frames** (from the camera's own timestamps + the camera SDK counter) and **missed lines**
+   (received vs expected) - must be 0.
+3. **Time per frame** (frame arrived -> ejector status done): average / 95 % / 99 % / max, and how many
+   frames took longer than one frame (3.33 ms at 16 lines) - if many do, the PC falls behind.
+4. **Consistency**: min / max / standard deviation, % of frames within +-1 ms of the median (OK = 99.9 %).
+**Save report** -> `logs\frame_check_<time>.txt` + `..._frames.csv` with ONE ROW PER FRAME:
+camera, frame, camera_time_ms, gap_to_previous_frame_ms, missed_frames_before, lines, processing_ms,
+**ejector_status = ONE 64-bit number** (bit 0 = channel 1 ... bit 62 = channel 63, bit 63 = 0;
+e.g. channels 1 + 3 -> 5). Test: `python tests\test_frame_check.py`.
+
 ## 8. Controls
 
 | Control | Changes | What it does |

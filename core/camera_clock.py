@@ -81,6 +81,11 @@ class CameraClock:
         frame_end = self._camera_s + min(self._offsets)
         return frame_end, self.line_time or self.default_line_time
 
+    @property
+    def camera_seconds(self):
+        """The camera's OWN clock (raw timestamps, unwrapped) of the last frame, in seconds - or None."""
+        return self._camera_s if self._last_raw is not None and self.using_camera_clock else None
+
     @staticmethod
     def line_times(frame_end, line_time, lines):
         """PC time of every line of the frame (index 0 = oldest line, last = newest)."""

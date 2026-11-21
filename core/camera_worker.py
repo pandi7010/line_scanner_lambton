@@ -30,10 +30,33 @@ import numpy as np
 from core import realtime
 from core.camera_clock import CameraClock
 from core.channel_activity import ChannelActivity
+from core.frame_check import FrameCheck
 from core.frame_history import FrameHistory
 from core.frame_store import FrameStore
 
 RETRY_SECONDS = 3       # wait this long before trying to (re)connect a camera
+
+
+def ejector_status(rows):
+    """
+    The ejector status of one frame as ONE 64-bit number:
+    bit 0 = channel 1, bit 1 = channel 2, ... bit 62 = channel 63, bit 63 = always 0.
+    A bit is 1 if that channel had something in ANY line of the frame.
+    Example: something in channels 1 and 3 -> 0b101 = 5.
+    """
+    channels = np.asarray(rows, dtype=bool).any(axis=0)[:63]
+    packed = np.packbits(channels, bitorder="little")          # 8 bytes, channel 1 = lowest bit
+    return int.from_bytes(packed.tobytes(), "little")
+
+
+def line_statuses(rows):
+    """Separate experiment: the ejector status of EVERY LINE - one 64-bit number per line
+    (bit 0 = channel 1 ... bit 62 = channel 63), oldest line first."""
+    rows = np.asarray(rows, dtype=bool)[:, :63]
+    packed = np.packbits(rows, axis=1, bitorder="little")        # lines x 8 bytes
+    padded = np.zeros((packed.shape[0], 8), dtype=np.uint8)
+    padded[:, :packed.shape[1]] = packed
+    return padded.view("<u8").ravel().tolist()
 
 
 def mirror_frame(frame):
@@ -71,6 +94,7 @@ class CameraWorker:
         self.activity = ChannelActivity(detector.channels if detector else 63, end_gap=end_gap)
         self.background_level = 0        # median colour level in the chute (for lower/upper)
         self.paused = False
+        self.frame_check = None          # core.FrameCheck while a "Frame check" is running
 
         # Statistics (read by the window).
         self.frame_count = 0
@@ -105,7 +129,7 @@ class CameraWorker:
 
     # --------------------------------------------------- used by the window
     def request_setting(self, key, value):
-        """Ask for a change. Keys: "frame_lines", "exposure_us"."""
+        """Ask for a change. Keys: "frame_lines", "exposure_us", "line_rate" (lines/s, 0 = max)."""
         with self._lock:
             self._requests[key] = value
 
@@ -173,12 +197,16 @@ class CameraWorker:
                 self.brightness = float(frame[:, ::16].mean())
 
             if self.paused:
+                self._check_frame(arrived, None, frame.shape[0], status=None, paused=True)
                 continue
             if self.mirror:
                 frame = mirror_frame(frame)                      # flip left <-> right
 
             # 5) Exact time of every line (camera clock), then: which channels have
             #    something in WHICH line? (EVERY line of EVERY frame, so no grain is missed.)
+            frame_end = None
+            status = None                # ejector status of this frame: ONE 64-bit number
+            per_line = None
             if self.detector is not None:
                 info = getattr(self.camera, "last_frame_info", None) or {}
                 lines = frame.shape[0]
@@ -188,15 +216,35 @@ class CameraWorker:
                 if self.history is not None:
                     self.history.add(frame_end, line_time, frame)     # no copy: just keep it
                 rows, self.background_level, pixels = self.detector.detect_rows(frame)
+                status = ejector_status(rows)
+                check = self.frame_check
+                if check is not None and check.per_line and not check.done:
+                    per_line = line_statuses(rows)          # separate experiment: one number per LINE
                 self.activity.mark_rows(rows, line_times, time.perf_counter(), pixels)
 
             # 6) Hand it to the screen.
             self.frames.put(frame)
+            self._check_frame(arrived, frame_end, frame.shape[0], status=status, paused=False, per_line=per_line)
 
         self.camera.close()
         self._set_status("Stopped", False)
 
     # --------------------------------------------------------------- helpers
+    def start_frame_check(self, frames=1000, per_line=False):
+        """Count the next `frames` frames (see core/frame_check.py). Returns the FrameCheck.
+        per_line=True: also keep the ejector status of every LINE (separate experiment)."""
+        with self._lock:
+            rate = self._settings.get("line_rate")
+        self.frame_check = FrameCheck(frames, self.name, line_rate_setting=rate, per_line=per_line)
+        return self.frame_check
+
+    def _check_frame(self, arrived, frame_end, lines, status, paused, per_line=None):
+        check = self.frame_check
+        if check is not None and not check.done:
+            camera_s = self.clock.camera_seconds if frame_end is not None else None
+            check.record(time.perf_counter() - arrived, camera_s, lines, status, paused,
+                         self.sdk_lost, camera_clock=getattr(self.clock, "use_camera_timestamp", True),
+                         arrived=arrived, line_statuses=per_line)
     def _try_open(self):
         self._set_status("Connecting...", False)
         try:
@@ -218,6 +266,8 @@ class CameraWorker:
                 self.camera.set_frame_lines(int(requests["frame_lines"]))
             if "exposure_us" in requests:
                 self.camera.set_exposure(float(requests["exposure_us"]))
+            if "line_rate" in requests:
+                self.camera.set_line_rate(int(requests["line_rate"]))
         except Exception as e:           # noqa: BLE001
             self._set_status(f"Could not change setting: {e}", False)
         self._report_settings()

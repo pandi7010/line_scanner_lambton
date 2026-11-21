@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
-from config import load_config  # noqa: E402
+from config import PROJECT_DIR, load_config  # noqa: E402
 from core import (CameraClock, CameraWorker, ChannelDetector, ChannelMap,  # noqa: E402
                   EjectScheduler, EventLog, realtime)
 from hardware import SDK_AVAILABLE, SDK_ERROR, Esp32Ejector, MindVisionCamera  # noqa: E402
@@ -66,6 +66,7 @@ def main():
             frame_lines=int(cam_cfg["frame_lines"]),
             sdk_buffers=int(cam_cfg["sdk_buffers"]),
             settings=cam_cfg,               # exposure + gains, applied like lambton-main
+            backup_dir=os.path.join(PROJECT_DIR, "camera_backups"),   # before a line-rate change
         )
         channel_map = ChannelMap.from_config(cam_cfg, config["channels"])   # calibrated if measured
         print(f"[{name}] channels: {channel_map.describe()}")

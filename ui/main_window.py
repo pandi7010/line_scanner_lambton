@@ -23,6 +23,7 @@ from core import realtime
 from ui.calibration_window import CalibrationWindow
 from ui.camera_panel import CameraPanel
 from ui.esp32_window import Esp32Window
+from ui.frame_check_window import FrameCheckWindow
 from ui.led_bar import LedBar
 from ui.log_window import LogWindow
 
@@ -68,6 +69,7 @@ class MainWindow(QMainWindow):
         self.log_window = None           # created the first time "Logs" is clicked
         self.calibration_window = None   # created the first time "Calibrate" is clicked
         self.esp32_window = None         # created the first time "ESP32 Ejector" is clicked
+        self.frame_check_window = None   # created the first time "Frame check" is clicked
         self.esp32_port = config["esp32"]["port"]
         display = config["display"]
 
@@ -93,6 +95,8 @@ class MainWindow(QMainWindow):
                 lambda lines, w=worker: w.request_setting("frame_lines", lines))
             panel.exposure_requested.connect(
                 lambda exposure, w=worker: w.request_setting("exposure_us", exposure))
+            panel.line_rate_requested.connect(
+                lambda rate, w=worker: w.request_setting("line_rate", rate))
             panel.thresholds_changed.connect(
                 lambda lower, upper, w=worker: w.set_thresholds(lower, upper))
 
@@ -189,6 +193,11 @@ class MainWindow(QMainWindow):
         esp32_button.setToolTip("Connect the valve board, test valves, switch real firing on / off")
         esp32_button.clicked.connect(self.on_esp32)
         buttons.addWidget(esp32_button)
+        frame_check_button = QPushButton("Frame check")
+        frame_check_button.setToolTip("Count the next 1000 frames: ejector status for every frame? "
+                                      "missed frames / lines? time per frame?")
+        frame_check_button.clicked.connect(self.on_frame_check)
+        buttons.addWidget(frame_check_button)
         buttons.addStretch()
 
         # --- put it all together ---------------------------------------------
@@ -342,6 +351,8 @@ class MainWindow(QMainWindow):
                 entry["frame_lines"] = current["frame_lines"]
             if "exposure_us" in current:
                 entry["exposure_us"] = round(current["exposure_us"], 1)
+            if current.get("line_rate") is not None and getattr(worker.camera, "backup_file", None):
+                entry["line_rate"] = int(current["line_rate"])     # only once you changed it here
             values[name] = entry
         ejector = {"delay_ms": round(self.delay_box.value(), 1),
                    "blow_ms": round(self.blow_box.value(), 1)}
@@ -388,6 +399,13 @@ class MainWindow(QMainWindow):
         for name, pts in points_per_camera.items():
             self.camera_configs[name]["channel_points"] = pts
 
+    def on_frame_check(self):
+        if self.frame_check_window is None:
+            self.frame_check_window = FrameCheckWindow(self.workers)
+        self.frame_check_window.show()
+        self.frame_check_window.raise_()
+        self.frame_check_window.activateWindow()
+
     def on_esp32(self):
         """Open the ESP32 Ejector window (connect, test valves, arm)."""
         if self.esp32_window is None:
@@ -429,7 +447,7 @@ class MainWindow(QMainWindow):
             self.autosave_timer.stop()
             self.autosave_timing()
         self.ejector.arm(False)          # all valves OFF
-        for window in (self.log_window, self.calibration_window, self.esp32_window):
+        for window in (self.log_window, self.calibration_window, self.esp32_window, self.frame_check_window):
             if window is not None:
                 window.close()
         for worker in self.workers.values():

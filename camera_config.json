@@ -11,7 +11,7 @@
     "led_hold_ms": 150
   },
   "ejector": {
-    "delay_ms": 8.0,
+    "delay_ms": 20.0,
     "blow_ms": 10.0,
     "same_object_ms": 30,
     "late_tolerance_ms": 1.0,

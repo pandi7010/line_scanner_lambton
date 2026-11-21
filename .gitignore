@@ -15,3 +15,5 @@ camera_config.json.bak
 
 # Output of PUSH_TO_GITHUB.bat
 push_log.txt
+camera_backups/
+_to_delete/

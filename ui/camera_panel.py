@@ -32,6 +32,7 @@ class CameraPanel(QFrame):
     # Signals to the window (camera settings).
     frame_lines_requested = pyqtSignal(int)
     exposure_requested = pyqtSignal(float)
+    line_rate_requested = pyqtSignal(int)
     # Signal to the window (detection thresholds: lower, upper).
     thresholds_changed = pyqtSignal(int, int)
 
@@ -71,6 +72,21 @@ class CameraPanel(QFrame):
         self.exposure_box.setKeyboardTracking(False)
         self.exposure_box.valueChanged.connect(lambda v: self.exposure_requested.emit(float(v)))
 
+        # Line rate: lines per second the camera scans (0 = maximum). Line-to-line time = 1 / rate.
+        self.line_rate_box = QSpinBox()
+        self.line_rate_box.setRange(0, 20000)
+        self.line_rate_box.setSingleStep(500)
+        self.line_rate_box.setSuffix(" lines/s")
+        self.line_rate_box.setSpecialValueText("max")
+        self.line_rate_box.setMinimumWidth(120)
+        self.line_rate_box.setKeyboardTracking(False)
+        self.line_rate_box.setToolTip("Camera line rate setting (0 = maximum for this exposure).\n"
+                                      "Line-to-line time = 1 / line rate, e.g. 4000 lines/s = 250 us per line.\n"
+                                      "All camera settings are backed up to camera_backups\\ before the first change.")
+        self.line_rate_box.valueChanged.connect(lambda v: self.line_rate_requested.emit(int(v)))
+        self.line_time_label = QLabel("")
+        self.line_time_label.setStyleSheet("color: gray;")
+
         self.range_label = QLabel("")
         self.range_label.setStyleSheet("color: gray;")
 
@@ -107,6 +123,10 @@ class CameraPanel(QFrame):
         settings_row.addWidget(self.exposure_box)
         settings_row.addWidget(self.range_label)
         settings_row.addSpacing(15)
+        settings_row.addWidget(QLabel("Line rate:"))
+        settings_row.addWidget(self.line_rate_box)
+        settings_row.addWidget(self.line_time_label)
+        settings_row.addSpacing(15)
         settings_row.addWidget(QLabel("V-stretch:"))
         settings_row.addWidget(self.stretch_box)
         settings_row.addSpacing(15)
@@ -133,6 +153,7 @@ class CameraPanel(QFrame):
     def set_camera_controls_enabled(self, enabled):
         self.frame_combo.setEnabled(enabled)
         self.exposure_box.setEnabled(enabled)
+        self.line_rate_box.setEnabled(enabled)
 
     def _on_thresholds_changed(self, _value):
         self.thresholds_changed.emit(self.lower_box.value(), self.upper_box.value())
@@ -161,6 +182,13 @@ class CameraPanel(QFrame):
         if "exposure_us" in settings:
             self.exposure_box.setValue(settings["exposure_us"])
         self.exposure_box.blockSignals(False)
+
+        rate = settings.get("line_rate")
+        if rate is not None:
+            self.line_rate_box.blockSignals(True)
+            self.line_rate_box.setValue(max(0, int(rate)))
+            self.line_rate_box.blockSignals(False)
+            self.line_time_label.setText(f"({1e6 / rate:.0f} us per line)" if rate > 0 else "(max)")
 
         self.set_camera_controls_enabled(True)
 

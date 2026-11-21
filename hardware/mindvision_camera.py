@@ -14,6 +14,8 @@ LAMTON_LINE_NEW_ESP32.py), in small steps:
     5. CameraSetTriggerMode(0)      -> continuous mode: the camera streams by itself
     5b. frame height (lines per frame)
     5c. exposure + gains from camera_config.json
+    5d. line rate (lines per second) - only if camera_config.json has "line_rate";
+        otherwise the camera keeps its own setting
     6. CameraPlay()                 -> start streaming
     7. loop:  CameraGetImageBuffer     -> raw data from the camera
               CameraImageProcess       -> raw data -> colour (BGR) picture
@@ -24,8 +26,9 @@ The cameras are line-scan cameras: every "frame" is a short, very wide strip
 (e.g. 4096 pixels wide x 16 lines tall).
 """
 
-from ctypes import c_ubyte
+from ctypes import byref, c_int, c_ubyte
 
+import os
 import time
 
 import numpy as np
@@ -103,12 +106,14 @@ class MindVisionCamera:
         cam.close()
     """
 
-    def __init__(self, serial, frame_lines=16, settings=None, sdk_buffers=8):
+    def __init__(self, serial, frame_lines=16, settings=None, sdk_buffers=8, backup_dir=None):
         """
         serial      : the camera's serial number (from camera_config.json)
         frame_lines : how many lines the camera puts in one frame (lambton-main uses 64).
                       Small = fast, smooth picture. Large (e.g. 10000) = one frame per second!
-        settings    : dict with exposure_us, analog_gain, r_gain, g_gain, b_gain.
+        backup_dir  : folder for a backup of ALL camera settings, written once before the
+                      first line-rate change (camera_backups\\<serial>_<time>.config)
+        settings    : dict with exposure_us, analog_gain, r_gain, g_gain, b_gain (+ line_rate).
                       Written to the camera at open - exactly like lambton-main does at
                       its start. Without them the camera keeps its power-on values,
                       which can give a (nearly) black picture.
@@ -127,6 +132,8 @@ class MindVisionCamera:
         #   lines     : lines in the frame
         self.last_frame_info = None
         self.handle = None          # SDK handle, None = camera is closed
+        self.backup_dir = backup_dir
+        self.backup_file = None     # written before the first line-rate change
         self.buffer = None          # memory where the SDK writes the colour picture
 
     # ------------------------------------------------------------------ open
@@ -169,6 +176,9 @@ class MindVisionCamera:
             # Step 5c: exposure + gains from camera_config.json (same as lambton-main).
             print(f"[CAMERA {self.serial}] before: {self._read_settings()}")
             self._apply_settings(self.settings)
+            # Step 5d: line rate - only if camera_config.json asks for one.
+            if self.settings.get("line_rate") is not None:
+                self.set_line_rate(int(self.settings["line_rate"]))
             self.info = self._read_settings()
             print(f"[CAMERA {self.serial}] now   : {self.info}")
 
@@ -205,6 +215,38 @@ class MindVisionCamera:
         self.settings["exposure_us"] = float(exposure_us)
         self.info = self._read_settings()
 
+    def get_line_rate(self):
+        """The camera's line-rate SETTING in lines per second (0 or less = maximum), or None."""
+        value = c_int(0)
+        err = mvsdk._sdk.CameraGetFrameRate(self.handle, byref(value))
+        return int(value.value) if err == 0 else None
+
+    def set_line_rate(self, lines_per_second):
+        """
+        Lines per second (0 = the maximum the camera can do with this exposure).
+        Line-to-line time = 1 / line rate, e.g. 4000 lines/s -> 250 us per line,
+        16 lines per frame -> one frame every 4.0 ms.
+        Before the FIRST change, all camera settings are saved to a backup file
+        (lambton-main rule: back up camera settings before any camera change).
+        """
+        self.backup_settings()
+        err = mvsdk._sdk.CameraSetFrameRate(self.handle, int(lines_per_second))
+        if err != 0:
+            raise CameraError(f"camera refused line rate {lines_per_second} (SDK error {err})")
+        self.settings["line_rate"] = int(lines_per_second)
+        print(f"[CAMERA {self.serial}] line rate set to {lines_per_second} "
+              f"(reads back as {self.get_line_rate()}); backup: {self.backup_file}")
+
+    def backup_settings(self):
+        """Save ALL camera settings to a file (once per program start). Returns the file."""
+        if self.backup_file or not self.backup_dir or self.handle is None:
+            return self.backup_file
+        os.makedirs(self.backup_dir, exist_ok=True)
+        path = os.path.join(self.backup_dir, f"{self.serial}_{time.strftime('%Y%m%d_%H%M%S')}.config")
+        if mvsdk.CameraSaveParameterToFile(self.handle, path) == 0:
+            self.backup_file = path
+        return self.backup_file
+
     def get_current_settings(self):
         """
         What the camera is REALLY using now, read back from the camera:
@@ -217,6 +259,7 @@ class MindVisionCamera:
             "exposure_us": float(mvsdk.CameraGetExposureTime(self.handle)),
             "exposure_min": float(exp_min),
             "exposure_max": float(exp_max),
+            "line_rate": self.get_line_rate(),
         }
 
     def _read_settings(self):

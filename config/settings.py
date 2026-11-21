@@ -27,6 +27,8 @@ CAMERA_DEFAULTS = {
     "upper": 221,             # detection: brighter than this = something there
     "band_mode": False,       # detection: True = hit when INSIDE lower..upper
     "channel_points": {},     # calibration: {valve: pixel of its centre}; empty = equal channels
+    "line_rate": None,        # lines per second set on the camera at start (None = keep the camera's own;
+                              # 0 = maximum). Written by "Save settings" after you change it in the window.
     "sdk_buffers": 8,         # frames the camera SDK may keep waiting (more = fewer lost frames, more memory)
 }
 
