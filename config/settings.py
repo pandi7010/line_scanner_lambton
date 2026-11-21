@@ -53,6 +53,10 @@ DEFAULTS = {
         "end_gap_lines": 8,   # an object ends after this many empty camera lines (8 = ~1.7 ms)
         "object_join_ms": 5.0,  # log: rows within 5 ms in neighbouring channels = one object
     },
+    "camera_only": True,      # project lead (21 Nov 2026): camera section only. True = NO PC valve timing,
+                              # no LEDs, no object pictures (they took the camera threads' time when objects
+                              # came: 10 ms per frame -> 40-70 % lines lost). Line status + Line log still work.
+                              # False = the old full viewer (PC times the LEDs / valves).
     "snap": {
         "enabled": True,      # Logs: small picture of every object (FRONT + REAR)
         "history_s": 0.6,     # seconds of frames kept to cut the pictures from (~35 MB per camera)

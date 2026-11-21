@@ -81,7 +81,8 @@ def main():
                             use_camera_timestamp=config["clock"]["use_camera_timestamp"])
         workers[name] = CameraWorker(name, camera, mirror=bool(cam_cfg["mirror"]), detector=detector,
                                      clock=clock, end_gap=config["ejector"]["end_gap_lines"],
-                                     snap_seconds=config["snap"]["history_s"] if config["snap"]["enabled"] else 0)
+                                     snap_seconds=(config["snap"]["history_s"]
+                                                   if config["snap"]["enabled"] and not config["camera_only"] else 0))
 
     # Ejector: either camera triggers; LED ON after the delay, for the blow time.
     ej = config["ejector"]
@@ -104,7 +105,10 @@ def main():
 
     for worker in workers.values():
         worker.start()
-    ejector.start()
+    if config["camera_only"]:
+        print("[MODE] camera only: no PC valve timing, no LEDs, no object pictures (camera_only = true)")
+    else:
+        ejector.start()
 
     exit_code = app.exec_()             # runs until the window is closed
     ejector.stop()                      # all valves OFF

@@ -82,5 +82,6 @@
       "line_rate": 4800,
       "sdk_buffers": 32
     }
-  }
+  },
+  "camera_only": true
 }
