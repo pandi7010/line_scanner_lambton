@@ -301,6 +301,20 @@ camera, frame, camera_time_ms, gap_to_previous_frame_ms, missed_frames_before, l
 **ejector_status = ONE 64-bit number** (bit 0 = channel 1 ... bit 62 = channel 63, bit 63 = 0;
 e.g. channels 1 + 3 -> 5). Test: `python tests\test_frame_check.py`.
 
+## 7e. Line log - the ejector status of EVERY line (project lead, 21 Nov 2026)
+
+Line rate: **4800 lines/s** for both cameras (`cameras.*.line_rate` in camera_config.json, set at start;
+the line rate test showed 0 lost lines at 4800 and below, 20 - 45 % lost above). Line time = 208.3 us.
+
+Button **Line log: START** -> records every line of both cameras into `logs\line_log_<time>.csv` until
+**Line log: STOP**. Then a summary: lines per camera, lost lines.
+Columns: `camera, frame, line (1-16), camera_time_ms, missed_lines_before, ejector_status`
+- `ejector_status` = ONE 64-bit number for that LINE (bit 0 = channel 1 ... bit 62 = channel 63).
+- `camera_time_ms` = line number x 0.2083 ms (lost lines counted), so every line has its exact time.
+- `missed_lines_before` = lines that never reached the PC just before this line (normally 0).
+About 0.4 MB per second (both cameras). Line rate test (all rates, automatic): `RUN_LINE_RATE_TEST.bat`.
+Tests: `python tests\test_line_log.py`, `python tests\test_frame_check.py`.
+
 ## 8. Controls
 
 | Control | Changes | What it does |

@@ -7,6 +7,7 @@ CORE LAYER - the "brain" between the hardware and the screen.
   frame_store.py   -> holds the newest frame (safe between threads)
   frame_history.py -> keeps the last ~0.6 s of frames, cuts out object snaps for the Logs
   frame_check.py   -> "Frame check": all frames + lines processed? time per frame?
+  line_logger.py   -> "Line log": the 64-bit ejector status of EVERY line into a CSV file
   channel_map.py   -> which pixels belong to which channel (equal, or calibrated on the valves)
   object_finder.py -> finds a thin object's centre pixel (for calibration)
   channel_detector.py -> which of the 63 channels has something in a frame
@@ -33,4 +34,5 @@ from core.object_finder import column_profile, find_object  # noqa: F401
 from core.frame_store import FrameStore  # noqa: F401
 from core.frame_history import FrameHistory, Snap  # noqa: F401
 from core.frame_check import FrameCheck  # noqa: F401
+from core.line_logger import LineLogger  # noqa: F401
 from core import realtime  # noqa: F401

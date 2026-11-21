@@ -95,6 +95,7 @@ class CameraWorker:
         self.background_level = 0        # median colour level in the chute (for lower/upper)
         self.paused = False
         self.frame_check = None          # core.FrameCheck while a "Frame check" is running
+        self.line_logger = None          # core.LineLogger while the "Line log" is recording
 
         # Statistics (read by the window).
         self.frame_count = 0
@@ -217,6 +218,9 @@ class CameraWorker:
                     self.history.add(frame_end, line_time, frame)     # no copy: just keep it
                 rows, self.background_level, pixels = self.detector.detect_rows(frame)
                 status = ejector_status(rows)
+                logger = self.line_logger
+                if logger is not None:           # Line log: every line's status (written by its own thread)
+                    logger.add(self.name, self.clock.camera_seconds, line_time, rows)
                 check = self.frame_check
                 if check is not None and check.per_line and not check.done:
                     per_line = line_statuses(rows)          # separate experiment: one number per LINE

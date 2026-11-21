@@ -18,8 +18,8 @@ from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import (QDoubleSpinBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                              QPushButton, QVBoxLayout, QWidget)
 
-from config import SNAPSHOT_DIR, save_camera_settings, save_esp32_port
-from core import realtime
+from config import PROJECT_DIR, SNAPSHOT_DIR, save_camera_settings, save_esp32_port
+from core import LineLogger, realtime
 from ui.calibration_window import CalibrationWindow
 from ui.camera_panel import CameraPanel
 from ui.esp32_window import Esp32Window
@@ -198,6 +198,13 @@ class MainWindow(QMainWindow):
                                       "missed frames / lines? time per frame?")
         frame_check_button.clicked.connect(self.on_frame_check)
         buttons.addWidget(frame_check_button)
+        self.line_log_button = QPushButton("Line log: START")
+        self.line_log_button.setToolTip("Record the 64-bit ejector status of EVERY camera line (both cameras)\n"
+                                        "into logs\\line_log_<time>.csv until you click STOP")
+        self.line_log_button.setCheckable(True)
+        self.line_log_button.toggled.connect(self.on_line_log)
+        buttons.addWidget(self.line_log_button)
+        self.line_logger = None
         buttons.addStretch()
 
         # --- put it all together ---------------------------------------------
@@ -399,6 +406,32 @@ class MainWindow(QMainWindow):
         for name, pts in points_per_camera.items():
             self.camera_configs[name]["channel_points"] = pts
 
+    def on_line_log(self, start):
+        """Start / stop recording every line's ejector status (core/line_logger.py)."""
+        if start:
+            folder = os.path.join(PROJECT_DIR, "logs")
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, time.strftime("line_log_%Y%m%d_%H%M%S.csv"))
+            rates = {}
+            for name, worker in self.workers.items():
+                settings, _ = worker.get_settings()
+                rates[name] = (settings or {}).get("line_rate")
+            try:
+                self.line_logger = LineLogger(path, rates).start(self.workers)
+            except Exception as e:       # noqa: BLE001
+                QMessageBox.critical(self, "Line log", f"Could not start:\n{e}")
+                self.line_log_button.setChecked(False)
+                return
+            self.line_log_button.setText("Line log: STOP (recording ...)")
+            self.line_log_button.setStyleSheet("background:#c0392b; color:white; font-weight:bold")
+        else:
+            logger, self.line_logger = self.line_logger, None
+            self.line_log_button.setText("Line log: START")
+            self.line_log_button.setStyleSheet("")
+            if logger is not None:
+                summary = logger.stop()
+                QMessageBox.information(self, "Line log", f"Saved:\n{logger.path}\n\n{summary['text']}")
+
     def on_frame_check(self):
         if self.frame_check_window is None:
             self.frame_check_window = FrameCheckWindow(self.workers)
@@ -447,6 +480,9 @@ class MainWindow(QMainWindow):
             self.autosave_timer.stop()
             self.autosave_timing()
         self.ejector.arm(False)          # all valves OFF
+        if self.line_logger is not None:     # still recording: close the file properly
+            self.line_logger.stop()
+            self.line_logger = None
         for window in (self.log_window, self.calibration_window, self.esp32_window, self.frame_check_window):
             if window is not None:
                 window.close()

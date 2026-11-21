@@ -29,7 +29,8 @@ CAMERA_DEFAULTS = {
     "channel_points": {},     # calibration: {valve: pixel of its centre}; empty = equal channels
     "line_rate": None,        # lines per second set on the camera at start (None = keep the camera's own;
                               # 0 = maximum). Written by "Save settings" after you change it in the window.
-    "sdk_buffers": 8,         # frames the camera SDK may keep waiting (more = fewer lost frames, more memory)
+    "sdk_buffers": 32,        # frames the camera SDK may keep waiting (32 = ~107 ms at 300 frames/s;
+                              # 8 lost frames when the PC was busy, 21 Nov 2026) (more = fewer lost frames, more memory)
 }
 
 DEFAULTS = {
